@@ -70,11 +70,19 @@ pipeline and land seconds to minutes after the write.
 Set `EVEROS_BASE_URL` to your own deployment. No API key is required when the
 URL is not an evermind.ai host.
 
+## Security
+
+Every write path runs a credential guard before content leaves the process:
+high-confidence secret formats (API keys, AWS/GitHub/Slack tokens, private
+keys, JWTs, URLs with embedded passwords) are refused with no bypass flag —
+long-term memory is not a safe place for secrets. Store a reference instead.
+
 ## Development
 
 ```bash
-uv sync
-EVEROS_BASE_URL=... EVEROS_API_KEY=... python scripts/smoke_test.py
+uv sync --dev
+uv run ruff check . && uv run pytest      # offline: wire contract, tools, guard
+EVEROS_API_KEY=... EVEROS_USER_ID=... python scripts/smoke_test.py   # live e2e
 ```
 
 ## License

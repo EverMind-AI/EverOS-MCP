@@ -16,8 +16,8 @@ import uuid
 
 sys.path.insert(0, "src")
 
-from everos_mcp.client import EverOSClient, now_ms  # noqa: E402
-from everos_mcp.config import Settings  # noqa: E402
+from everos_mcp.client import EverOSClient, now_ms
+from everos_mcp.config import Settings
 
 
 def main() -> int:

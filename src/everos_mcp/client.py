@@ -31,7 +31,9 @@ def now_ms() -> int:
 
 
 class EverOSClient:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, transport: httpx.BaseTransport | None = None
+    ) -> None:
         self.settings = settings
         headers = {}
         if settings.api_key:
@@ -40,6 +42,7 @@ class EverOSClient:
             base_url=settings.base_url,
             headers=headers,
             timeout=httpx.Timeout(60.0, connect=10.0),
+            transport=transport or httpx.HTTPTransport(retries=2),
         )
 
     def close(self) -> None:

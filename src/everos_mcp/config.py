@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 PROD_BASE_URL = "https://api.evermind.ai"
 
@@ -37,7 +38,8 @@ class Settings:
             or os.environ.get("EVER_OS_BASE_URL", "").strip()
             or PROD_BASE_URL
         ).rstrip("/")
-        if not api_key and "evermind.ai" in base_url:
+        host = urlparse(base_url).hostname or ""
+        if not api_key and (host == "evermind.ai" or host.endswith(".evermind.ai")):
             raise ConfigError(
                 "EVEROS_API_KEY is not set. Get one at "
                 "https://everos.evermind.ai/api-keys and put it in your MCP "

@@ -8,8 +8,9 @@ from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from .client import EverOSClient, EverOSError, now_ms
+from .client import EverOSClient, now_ms
 from .config import ConfigError, Settings
+from .guard import find_secret, refusal
 
 # Spliced into the host's system prompt by clients that honour
 # `initialize.instructions`. This is the autonomy protocol: memory only
@@ -142,6 +143,9 @@ def add_memory(
     """
     if not user_message and not assistant_message:
         return "Error: provide user_message and/or assistant_message."
+    finding = find_secret(user_message + "\n" + assistant_message)
+    if finding:
+        return refusal(finding)
     client = _get_client()
     s = client.settings
     ts = now_ms()
@@ -274,6 +278,11 @@ def record_trajectory(messages: list[dict[str, Any]]) -> str:
     """
     if not messages:
         return "Error: messages must be a non-empty trajectory."
+    finding = find_secret(
+        "\n".join(str(m.get("content") or "") for m in messages)
+    )
+    if finding:
+        return refusal(finding)
     client = _get_client()
     s = client.settings
     ts = now_ms()
