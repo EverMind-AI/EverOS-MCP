@@ -540,3 +540,44 @@ def test_http_app_rejects_missing_bearer_and_serves_health(monkeypatch):
     assert denied.status_code == 401
     assert denied.headers["www-authenticate"].startswith("Bearer")
     assert health.status_code == 200 and health.text == "ok"
+
+
+def test_http_app_publishes_protected_resource_metadata(monkeypatch):
+    reg, _ = make_registry()
+    monkeypatch.setattr(server, "_registry", None)
+    app = server.http_app(
+        reg,
+        public_url="https://mcp.example.com",
+        authorization_server="https://auth.example.com",
+    )
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
+            meta = await c.get("/.well-known/oauth-protected-resource/mcp")
+            denied = await c.post("/mcp", json={})
+        return meta, denied
+
+    meta, denied = run(scenario())
+    assert meta.json() == {
+        "resource": "https://mcp.example.com/mcp",
+        "authorization_servers": ["https://auth.example.com"],
+        "bearer_methods_supported": ["header"],
+    }
+    assert (
+        'resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"'
+        in denied.headers["www-authenticate"]
+    )
+
+
+def test_http_app_without_authorization_server_has_no_metadata(monkeypatch):
+    reg, _ = make_registry()
+    monkeypatch.setattr(server, "_registry", None)
+    app = server.http_app(reg)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
+            return await c.get("/.well-known/oauth-protected-resource")
+
+    assert run(scenario()).status_code == 404

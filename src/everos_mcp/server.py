@@ -483,9 +483,21 @@ async def _healthz(_request: Request) -> Response:
     return PlainTextResponse("ok")
 
 
-def http_app(registry: ConversationRegistry, allowed_hosts: str = "") -> ASGIApp:
+def http_app(
+    registry: ConversationRegistry,
+    allowed_hosts: str = "",
+    *,
+    public_url: str = "",
+    authorization_server: str = "",
+) -> ASGIApp:
     """The streamable-HTTP app, behind a bearer check. The server holds no
-    credentials of its own: each request's key is forwarded to EverOS."""
+    credentials of its own: each request's key is forwarded to EverOS.
+
+    With `authorization_server` set, the server also acts as an OAuth
+    protected resource (RFC 9728): it publishes which authorization server
+    issues its tokens, so OAuth-only hosts (claude.ai, ChatGPT) can sign
+    users in. The tokens that server issues are EverOS API keys, so nothing
+    else here changes."""
     global _registry
     _registry = registry
     hosts = [h.strip() for h in allowed_hosts.split(",") if h.strip()]
@@ -501,7 +513,24 @@ def http_app(registry: ConversationRegistry, allowed_hosts: str = "") -> ASGIApp
         mcp.settings.transport_security = TransportSecuritySettings(
             enable_dns_rebinding_protection=False
         )
-    return _RequireBearer(mcp.streamable_http_app(), mcp.settings.streamable_http_path)
+    if authorization_server and not public_url:
+        raise ConfigError("EVEROS_MCP_PUBLIC_URL is required with an authorization server")
+    metadata = None
+    if authorization_server:
+        metadata = {
+            "resource": public_url.rstrip("/") + mcp.settings.streamable_http_path,
+            "authorization_servers": [authorization_server.rstrip("/")],
+            "bearer_methods_supported": ["header"],
+        }
+    return _RequireBearer(
+        mcp.streamable_http_app(),
+        mcp.settings.streamable_http_path,
+        metadata=metadata,
+        public_url=public_url.rstrip("/"),
+    )
+
+
+_PRM_PATH = "/.well-known/oauth-protected-resource"
 
 
 class _RequireBearer:
@@ -509,11 +538,35 @@ class _RequireBearer:
     WWW-Authenticate), as the MCP authorization spec expects of a protected
     resource — the hook an OAuth flow will later plug into."""
 
-    def __init__(self, app: ASGIApp, path: str) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        path: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        public_url: str = "",
+    ) -> None:
         self.app = app
         self.path = path
+        self.metadata = metadata
+        # RFC 9728 §3: the metadata lives at the well-known prefix + the
+        # resource's path; the bare prefix is served too for older clients.
+        self.metadata_paths = {
+            _PRM_PATH + path,
+            _PRM_PATH,
+        }
+        self.challenge = 'Bearer realm="everos"'
+        if metadata is not None:
+            self.challenge += f', resource_metadata="{public_url}{_PRM_PATH}{path}"'
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            self.metadata is not None
+            and scope["type"] == "http"
+            and scope["path"] in self.metadata_paths
+        ):
+            await JSONResponse(self.metadata)(scope, receive, send)
+            return
         if scope["type"] == "http" and scope["path"].startswith(self.path):
             auth = Headers(scope=scope).get("authorization", "")
             scheme, _, token = auth.partition(" ")
@@ -524,7 +577,7 @@ class _RequireBearer:
                         "message": "send 'Authorization: Bearer <EverOS API key>'",
                     },
                     status_code=401,
-                    headers={"WWW-Authenticate": 'Bearer realm="everos"'},
+                    headers={"WWW-Authenticate": self.challenge},
                 )
                 await response(scope, receive, send)
                 return
@@ -536,7 +589,12 @@ async def _serve_http(host: str, port: int, allowed_hosts: str) -> None:
 
     mcp.settings.host, mcp.settings.port = host, port
     registry = ConversationRegistry(base_url_from_env())
-    app = http_app(registry, allowed_hosts)
+    app = http_app(
+        registry,
+        allowed_hosts,
+        public_url=os.environ.get("EVEROS_MCP_PUBLIC_URL", "").strip(),
+        authorization_server=os.environ.get("EVEROS_MCP_AUTHORIZATION_SERVER", "").strip(),
+    )
     print(
         f"everos-mcp: serving MCP on http://{host}:{port}{mcp.settings.streamable_http_path}"
         f" -> {registry.base_url}",

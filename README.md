@@ -102,6 +102,8 @@ claude mcp add --transport http everos https://mcp.example.com/mcp \
 | `EVEROS_APP_ID` / `EVEROS_PROJECT_ID` | `default` | Business scope for every caller |
 | `EVEROS_MCP_HOST` / `EVEROS_MCP_PORT` | `127.0.0.1` / `8765` | Bind address (same as `--host` / `--port`) |
 | `EVEROS_MCP_ALLOWED_HOSTS` | — | Comma-separated public host names to accept (DNS-rebinding protection) |
+| `EVEROS_MCP_PUBLIC_URL` | — | Public base URL of this server, e.g. `https://mcp.example.com` |
+| `EVEROS_MCP_AUTHORIZATION_SERVER` | — | OAuth issuer that signs users in. When set, the server publishes RFC 9728 metadata at `/.well-known/oauth-protected-resource/mcp` and points to it from the 401 challenge. Its access tokens must be EverOS API keys |
 
 Deployment notes:
 
@@ -112,8 +114,7 @@ Deployment notes:
 - Conversations are isolated by (API key, user, MCP session): one caller never
   sees another's session, background-save notes, or trajectories.
 - Hosts that only connect through OAuth (claude.ai connectors, ChatGPT) need an
-  authorization server in front; the 401 + `WWW-Authenticate` response is the
-  hook for it.
+  authorization server; set `EVEROS_MCP_AUTHORIZATION_SERVER` once one exists.
 
 ## Security
 
