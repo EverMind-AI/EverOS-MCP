@@ -46,14 +46,9 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         api_key = os.environ.get("EVEROS_API_KEY", "").strip()
+        base_url = base_url_from_env()
         # Self-hosted / OSS deployments have no gateway auth; only require a
         # key when pointing at a hosted environment (anything on evermind.ai).
-        base_url = (
-            os.environ.get("EVEROS_BASE_URL", "").strip()
-            # Fallback: same variable the everos-cloud SDK uses.
-            or os.environ.get("EVER_OS_BASE_URL", "").strip()
-            or PROD_BASE_URL
-        ).rstrip("/")
         host = urlparse(base_url).hostname or ""
         if not api_key and (host == "evermind.ai" or host.endswith(".evermind.ai")):
             raise ConfigError(
@@ -63,7 +58,7 @@ class Settings:
                 "EVEROS_BASE_URL to your own deployment instead.)"
             )
         user_id = os.environ.get("EVEROS_USER_ID", "").strip()
-        if user_id and not _ID_RE.fullmatch(user_id):
+        if user_id and not valid_id(user_id):
             raise ConfigError(
                 f"EVEROS_USER_ID {user_id!r} may only contain letters, digits "
                 "and the characters _ . @ + -"
@@ -75,8 +70,8 @@ class Settings:
             api_key=api_key,
             base_url=base_url,
             user_id=user_id,
-            app_id=os.environ.get("EVEROS_APP_ID", "default").strip() or "default",
-            project_id=os.environ.get("EVEROS_PROJECT_ID", "default").strip() or "default",
+            app_id=_env_scope("EVEROS_APP_ID"),
+            project_id=_env_scope("EVEROS_PROJECT_ID"),
             # One session per server process (≈ one client connection): two
             # clients never share a buffer, and forget_session has a bounded
             # blast radius.
@@ -88,3 +83,36 @@ class Settings:
             assistant_sender_id=os.environ.get("EVEROS_ASSISTANT_SENDER_ID", "").strip()
             or f"assistant-{user_id}",
         )
+
+    @classmethod
+    def remote(cls, *, api_key: str, user_id: str, base_url: str) -> Settings:
+        """Settings for one conversation on the HTTP server: credentials and
+        identity come from the request, the endpoint and scope from the
+        operator. The agent identity is always per user here — a shared one
+        would pool trajectories across everyone who uses the server."""
+        return cls(
+            api_key=api_key,
+            base_url=base_url,
+            user_id=user_id,
+            app_id=_env_scope("EVEROS_APP_ID"),
+            project_id=_env_scope("EVEROS_PROJECT_ID"),
+            session_id=f"mcp-{user_id}-{uuid.uuid4().hex[:12]}",
+            assistant_sender_id=f"assistant-{user_id}",
+        )
+
+
+def base_url_from_env() -> str:
+    return (
+        os.environ.get("EVEROS_BASE_URL", "").strip()
+        # Fallback: same variable the everos-cloud SDK uses.
+        or os.environ.get("EVER_OS_BASE_URL", "").strip()
+        or PROD_BASE_URL
+    ).rstrip("/")
+
+
+def valid_id(value: str) -> bool:
+    return bool(_ID_RE.fullmatch(value))
+
+
+def _env_scope(var: str) -> str:
+    return os.environ.get(var, "default").strip() or "default"

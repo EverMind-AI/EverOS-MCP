@@ -35,25 +35,38 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def make_http(
+    base_url: str, transport: httpx.AsyncBaseTransport | None = None
+) -> httpx.AsyncClient:
+    """Connection pool for one EverOS endpoint. Carries no credentials, so the
+    HTTP server can share one pool across every user's client."""
+    return httpx.AsyncClient(
+        base_url=base_url,
+        timeout=READ_TIMEOUT,
+        # Retries cover connection failures only (the request never left),
+        # so they are safe for non-idempotent writes.
+        transport=transport or httpx.AsyncHTTPTransport(retries=2),
+    )
+
+
 class EverOSClient:
     def __init__(
-        self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None
+        self,
+        settings: Settings,
+        transport: httpx.AsyncBaseTransport | None = None,
+        *,
+        http: httpx.AsyncClient | None = None,
     ) -> None:
         self.settings = settings
-        headers = {}
+        self._headers = {}
         if settings.api_key:
-            headers["Authorization"] = f"Bearer {settings.api_key}"
-        self._http = httpx.AsyncClient(
-            base_url=settings.base_url,
-            headers=headers,
-            timeout=READ_TIMEOUT,
-            # Retries cover connection failures only (the request never left),
-            # so they are safe for non-idempotent writes.
-            transport=transport or httpx.AsyncHTTPTransport(retries=2),
-        )
+            self._headers["Authorization"] = f"Bearer {settings.api_key}"
+        self._owns_http = http is None
+        self._http = http or make_http(settings.base_url, transport)
 
     async def aclose(self) -> None:
-        await self._http.aclose()
+        if self._owns_http:
+            await self._http.aclose()
 
     # -- transport -----------------------------------------------------------
 
@@ -62,7 +75,10 @@ class EverOSClient:
     ) -> dict[str, Any]:
         try:
             resp = await self._http.post(
-                path, json=payload, timeout=WRITE_TIMEOUT if write else READ_TIMEOUT
+                path,
+                json=payload,
+                headers=self._headers,
+                timeout=WRITE_TIMEOUT if write else READ_TIMEOUT,
             )
         except httpx.TimeoutException as exc:
             if write and not isinstance(exc, httpx.ConnectTimeout):

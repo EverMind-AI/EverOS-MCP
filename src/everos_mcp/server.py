@@ -2,24 +2,27 @@
 
 from __future__ import annotations
 
-import asyncio
+import argparse
 import json
 import logging
 import os
 import sys
 import uuid
-from collections.abc import Awaitable
 from typing import Any, Literal
 
 import anyio
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
+from starlette.datastructures import Headers
+from starlette.requests import Request
+from starlette.responses import JSONResponse, PlainTextResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .client import EverOSClient, EverOSError, now_ms
-from .config import ConfigError, Settings
+from .config import ConfigError, Settings, base_url_from_env
+from .conversation import Conversation, ConversationRegistry
 from .guard import find_secret_in, refusal
-
-log = logging.getLogger("everos_mcp")
 
 # Spliced into the host's system prompt by clients that honour
 # `initialize.instructions`. This is the autonomy protocol: memory only
@@ -63,79 +66,28 @@ _DESTRUCTIVE = ToolAnnotations(
 
 # -- runtime state ---------------------------------------------------------------
 
-_client: EverOSClient | None = None
-# Background writes still in flight, and the outcome notes of those that
-# finished badly; the notes ride along on the next tool result so a failure
-# is never silent.
-_pending: set[asyncio.Task[None]] = set()
-_notices: list[str] = []
-# Serializes add -> flush per session so two concurrent saves cannot steal
-# each other's flush.
-_locks: dict[str, asyncio.Lock] = {}
-# Sessions created by record_trajectory in this process, for forget_session.
-_trajectory_sessions: list[str] = []
-
-
-def _get_client() -> EverOSClient:
-    global _client
-    if _client is None:
-        _client = EverOSClient(Settings.from_env())
-    return _client
-
-
-async def _drain(timeout: float | None = None) -> None:
-    """Wait for in-flight background writes to finish."""
-    if _pending:
-        await asyncio.wait(set(_pending), timeout=timeout)
-
+# stdio: the one conversation of this process, configured from the environment.
+_local: Conversation | None = None
+# HTTP: conversations keyed by the caller's API key, user and MCP session.
+_registry: ConversationRegistry | None = None
 
 mcp = FastMCP(name="everos", instructions=INSTRUCTIONS)
 
 
-def _spawn(coro: Awaitable[None], label: str) -> None:
-    async def run() -> None:
-        try:
-            await coro
-        except EverOSError as exc:
-            _notices.append(f"background {label} failed: {exc}")
-        except Exception as exc:  # never let a background task die silently
-            log.exception("background %s crashed", label)
-            _notices.append(f"background {label} failed unexpectedly: {exc!r}")
-
-    task = asyncio.ensure_future(run())
-    _pending.add(task)
-    task.add_done_callback(_pending.discard)
+def _local_conversation() -> Conversation:
+    global _local
+    if _local is None:
+        _local = Conversation(EverOSClient(Settings.from_env()))
+    return _local
 
 
-def _reply(text: str) -> str:
-    if not _notices:
-        return text
-    notes = "\n".join(f"- {n}" for n in _notices)
-    _notices.clear()
-    return f"{text}\n\nEarlier background saves reported problems:\n{notes}"
-
-
-async def _store(messages: list[dict[str, Any]], session_id: str) -> str | None:
-    """Write messages, then make sure extraction ran.
-    Returns the final status; "extracted" means searchable."""
-    client = _get_client()
-    lock = _locks.setdefault(session_id, asyncio.Lock())
-    async with lock:
-        # Synchronous add: the buffer write has landed before any flush runs.
-        status = (await client.add(messages, session_id=session_id, sync=True)).get("status")
-        if status != "extracted":
-            status = (await client.flush(session_id)).get("status")
-    return status
-
-
-async def _store_in_background(
-    messages: list[dict[str, Any]], session_id: str, *, label: str
-) -> None:
-    status = await _store(messages, session_id)
-    if status != "extracted":
-        _notices.append(
-            f"{label}: stored, but extraction returned {status!r}; it is not searchable yet"
-        )
+def _conversation(ctx: Context | None) -> Conversation:
+    """The conversation a tool call belongs to: on HTTP, resolved from the
+    request's credentials and MCP session; on stdio, the process-wide one."""
+    request = ctx.request_context.request if ctx is not None else None
+    if request is None or _registry is None:
+        return _local_conversation()
+    return _registry.resolve(request.headers)
 
 
 # -- formatting helpers -------------------------------------------------------
@@ -177,7 +129,12 @@ def _fmt_skill(skill: dict) -> str:
 
 
 @mcp.tool(annotations=_READ_ONLY)
-async def search_memory(query: str, top_k: int = 10, include_profile: bool = False) -> str:
+async def search_memory(
+    query: str,
+    top_k: int = 10,
+    include_profile: bool = False,
+    ctx: Context | None = None,
+) -> str:
     """Search the user's long-term memory for past conversations, decisions,
     preferences, and facts.
 
@@ -190,9 +147,10 @@ async def search_memory(query: str, top_k: int = 10, include_profile: bool = Fal
     worse. Memories saved in the last minute may not be indexed yet;
     list_memories shows them sooner.
     """
+    conv = _conversation(ctx)
     if not query.strip():
-        return _reply("Error: query must be non-empty keywords.")
-    data = await _get_client().search(
+        return conv.reply("Error: query must be non-empty keywords.")
+    data = await conv.client.search(
         query, top_k=max(1, min(top_k, 100)), include_profile=include_profile
     )
     parts: list[str] = []
@@ -203,11 +161,11 @@ async def search_memory(query: str, top_k: int = 10, include_profile: bool = Fal
     if profiles:
         parts.append("User profile:\n" + "\n".join(_fmt_profile(p) for p in profiles))
     if not parts:
-        return _reply(
+        return conv.reply(
             "No relevant memories found. Note: memories saved in the last minute "
             "may not be indexed yet — list_memories shows them sooner."
         )
-    return _reply(_DATA_NOTE + "\n\n" + "\n\n".join(parts))
+    return conv.reply(_DATA_NOTE + "\n\n" + "\n\n".join(parts))
 
 
 @mcp.tool(annotations=_WRITE)
@@ -215,6 +173,7 @@ async def add_memory(
     user_message: str = "",
     assistant_message: str = "",
     wait: bool = False,
+    ctx: Context | None = None,
 ) -> str:
     """Store a durable fact or noteworthy exchange in the user's long-term
     memory.
@@ -229,12 +188,13 @@ async def add_memory(
     on a later tool result. Set wait=true only when you must search for it
     right away — it blocks until extraction finishes.
     """
+    conv = _conversation(ctx)
     if not user_message and not assistant_message:
-        return _reply("Error: provide user_message and/or assistant_message.")
+        return conv.reply("Error: provide user_message and/or assistant_message.")
     finding = find_secret_in([user_message, assistant_message])
     if finding:
-        return _reply(refusal(finding))
-    s = _get_client().settings
+        return conv.reply(refusal(finding))
+    s = conv.settings
     ts = now_ms()
     messages = []
     if user_message:
@@ -252,19 +212,19 @@ async def add_memory(
         )
 
     if wait:
-        status = await _store(messages, s.session_id)
+        status = await conv.store(messages, s.session_id)
         if status == "extracted":
-            return _reply("Stored and extracted; the memory is now searchable.")
-        return _reply(
+            return conv.reply("Stored and extracted; the memory is now searchable.")
+        return conv.reply(
             f"Stored, but extraction did not run (status {status!r}). The memory is "
             "NOT searchable yet — do not tell the user it was remembered."
         )
-    _spawn(_store_in_background(messages, s.session_id, label="add_memory"), "add_memory")
-    return _reply("Saved. Extraction is running in the background; searchable shortly.")
+    conv.spawn(conv.store_in_background(messages, s.session_id, label="add_memory"), "add_memory")
+    return conv.reply("Saved. Extraction is running in the background; searchable shortly.")
 
 
 @mcp.tool(annotations=_READ_ONLY)
-async def get_profile() -> str:
+async def get_profile(ctx: Context | None = None) -> str:
     """Get the synthesized profile of the user: stable facts, traits, and
     preferences distilled from all past sessions.
 
@@ -272,11 +232,12 @@ async def get_profile() -> str:
     not re-fetch it during the session, and do not use it to recall specific
     past events — that is search_memory's job.
     """
-    data = await _get_client().get("profile", page_size=10)
+    conv = _conversation(ctx)
+    data = await conv.client.get("profile", page_size=10)
     profiles = data.get("profiles") or []
     if not profiles:
-        return _reply("No profile yet — it is synthesized after enough memories accumulate.")
-    return _reply(_DATA_NOTE + "\n\n" + "\n\n".join(_fmt_profile(p) for p in profiles))
+        return conv.reply("No profile yet — it is synthesized after enough memories accumulate.")
+    return conv.reply(_DATA_NOTE + "\n\n" + "\n\n".join(_fmt_profile(p) for p in profiles))
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -284,12 +245,14 @@ async def list_memories(
     memory_type: Literal["episode", "profile"] = "episode",
     page: int = 1,
     page_size: int = 20,
+    ctx: Context | None = None,
 ) -> str:
     """Browse stored memories chronologically (newest first), with pagination.
     Use this when the user asks what is remembered about them; use
     search_memory when looking for something specific."""
+    conv = _conversation(ctx)
     page = max(1, page)
-    data = await _get_client().get(memory_type, page=page, page_size=max(1, min(page_size, 100)))
+    data = await conv.client.get(memory_type, page=page, page_size=max(1, min(page_size, 100)))
     total = data.get("total_count", 0)
     if memory_type == "profile":
         items = [_fmt_profile(p) for p in data.get("profiles") or []]
@@ -297,13 +260,13 @@ async def list_memories(
         items = [_fmt_episode(e) for e in data.get("episodes") or []]
     if not items:
         if page > 1:
-            return _reply(f"No memories on page {page} ({total} total).")
-        return _reply("No memories stored yet.")
-    return _reply(f"{_DATA_NOTE}\n\n{total} total, page {page}:\n" + "\n".join(items))
+            return conv.reply(f"No memories on page {page} ({total} total).")
+        return conv.reply("No memories stored yet.")
+    return conv.reply(f"{_DATA_NOTE}\n\n{total} total, page {page}:\n" + "\n".join(items))
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
-async def forget_session(include_trajectories: bool = True) -> str:
+async def forget_session(include_trajectories: bool = True, ctx: Context | None = None) -> str:
     """Delete what was stored through this connection: the memories extracted
     from this conversation and, unless include_trajectories=false, the cases
     distilled from trajectories recorded in it. The long-term user profile and
@@ -312,26 +275,27 @@ async def forget_session(include_trajectories: bool = True) -> str:
     Call this ONLY when the user explicitly asks to forget or delete what was
     said in this conversation. It cannot be undone.
     """
-    await _drain()  # do not let a queued save land after the delete
-    client = _get_client()
+    conv = _conversation(ctx)
+    await conv.drain()  # do not let a queued save land after the delete
+    client = conv.client
     try:
-        deleted = (await client.delete_session(client.settings.session_id)).get("count", 0)
+        deleted = (await client.delete_session(conv.session_id)).get("count", 0)
     except EverOSError as exc:
         if exc.code not in ("404", "405", "not_found"):
             raise
         # Self-hosted EverOS has no delete endpoint yet; memories live as
         # Markdown files on that server.
-        return _reply(
+        return conv.reply(
             "This EverOS deployment does not support deleting memories through "
             "the API (self-hosted servers keep them as Markdown files under "
             "~/.everos/ on the server — remove them there). Nothing was deleted."
         )
     if include_trajectories:
-        for session_id in list(_trajectory_sessions):
+        for session_id in list(conv.trajectory_sessions):
             result = await client.delete_session(session_id, owner=False)
             deleted += result.get("count", 0)
-            _trajectory_sessions.remove(session_id)
-    return _reply(
+            conv.trajectory_sessions.remove(session_id)
+    return conv.reply(
         f"Deleted {deleted} stored item(s) from this conversation. The user "
         "profile and learned skills are unchanged; memories from earlier "
         "conversations are untouched."
@@ -363,7 +327,7 @@ def _normalize_tool_calls(tool_calls: list[dict]) -> list[dict]:
 
 
 @mcp.tool(annotations=_WRITE)
-async def record_trajectory(messages: list[dict[str, Any]]) -> str:
+async def record_trajectory(messages: list[dict[str, Any]], ctx: Context | None = None) -> str:
     """Record how a task was solved so the approach can be reused in future
     sessions. EverOS distills trajectories into cases (concrete solutions) and
     skills (generalized procedures).
@@ -382,20 +346,23 @@ async def record_trajectory(messages: list[dict[str, Any]]) -> str:
     Timestamps are added automatically. Returns at once; recording runs in
     the background.
     """
+    conv = _conversation(ctx)
     if not messages:
-        return _reply("Error: messages must be a non-empty trajectory.")
+        return conv.reply("Error: messages must be a non-empty trajectory.")
     # Tool-call arguments and tool results are where credentials most often
     # appear (auth headers, connection strings), so scan the whole structure.
     finding = find_secret_in(messages)
     if finding:
-        return _reply(refusal(finding))
-    s = _get_client().settings
+        return conv.reply(refusal(finding))
+    s = conv.settings
     ts = now_ms()
     wire: list[dict[str, Any]] = []
     for i, m in enumerate(messages):
         role = m.get("role")
         if role not in ("user", "assistant", "tool"):
-            return _reply(f"Error: message {i} has invalid role {role!r} (user|assistant|tool).")
+            return conv.reply(
+                f"Error: message {i} has invalid role {role!r} (user|assistant|tool)."
+            )
         item: dict[str, Any] = {
             "sender_id": s.user_id if role == "user" else s.assistant_sender_id,
             "role": role,
@@ -406,18 +373,18 @@ async def record_trajectory(messages: list[dict[str, Any]]) -> str:
             item["tool_calls"] = _normalize_tool_calls(m["tool_calls"])
         if role == "tool":
             if not m.get("tool_call_id"):
-                return _reply(f"Error: tool message {i} is missing tool_call_id.")
+                return conv.reply(f"Error: tool message {i} is missing tool_call_id.")
             item["tool_call_id"] = m["tool_call_id"]
         wire.append(item)
     # Its own session: buffered personal messages never mix into the
     # trajectory, and each recording is extracted as exactly one unit.
     session_id = f"traj-{uuid.uuid4().hex[:16]}"
-    _trajectory_sessions.append(session_id)
-    _spawn(
-        _store_in_background(wire, session_id, label="record_trajectory"),
+    conv.trajectory_sessions.append(session_id)
+    conv.spawn(
+        conv.store_in_background(wire, session_id, label="record_trajectory"),
         "record_trajectory",
     )
-    return _reply(
+    return conv.reply(
         "Trajectory recording in the background. Distilled cases become "
         "available via recall_agent_experience within minutes; skills evolve "
         "over time."
@@ -429,6 +396,7 @@ async def recall_agent_experience(
     task: str,
     kind: Literal["case", "skill", "both"] = "both",
     top_k: int = 5,
+    ctx: Context | None = None,
 ) -> str:
     """Recall past problem-solving experience relevant to a task: cases are
     concrete past solutions (what was tried, how well it worked), skills are
@@ -438,9 +406,10 @@ async def recall_agent_experience(
     instead of solving from scratch. `task` is a SHORT description of the
     task at hand (a few keywords), used to find relevant experience.
     """
+    conv = _conversation(ctx)
     if not task.strip():
-        return _reply("Error: task must describe the task at hand in a few keywords.")
-    data = await _get_client().search(task, top_k=max(1, min(top_k, 50)), agent=True)
+        return conv.reply("Error: task must describe the task at hand in a few keywords.")
+    data = await conv.client.search(task, top_k=max(1, min(top_k, 50)), agent=True)
     parts: list[str] = []
     if kind in ("case", "both"):
         cases = data.get("agent_cases") or []
@@ -451,41 +420,133 @@ async def recall_agent_experience(
         if skills:
             parts.append("Learned skills:\n" + "\n".join(_fmt_skill(sk) for sk in skills))
     if not parts:
-        return _reply(
+        return conv.reply(
             "No relevant experience recorded yet. Record solved tasks with "
             "record_trajectory to build it up."
         )
-    return _reply(_DATA_NOTE + "\n\n" + "\n\n".join(parts))
+    return conv.reply(_DATA_NOTE + "\n\n" + "\n\n".join(parts))
 
 
 # -- entry point ---------------------------------------------------------------
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="everos-mcp", description=__doc__)
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "http"),
+        default=os.environ.get("EVEROS_MCP_TRANSPORT", "stdio"),
+        help="stdio (default): one local user, configured from the environment. "
+        "http: a shared server; every request brings its own API key.",
+    )
+    parser.add_argument("--host", default=os.environ.get("EVEROS_MCP_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("EVEROS_MCP_PORT", "8765")))
+    parser.add_argument(
+        "--allowed-hosts",
+        default=os.environ.get("EVEROS_MCP_ALLOWED_HOSTS", ""),
+        help="comma-separated Host header values to accept (DNS-rebinding "
+        "protection), e.g. 'mcp.evermind.ai'. Default: loopback only when bound "
+        "to loopback, otherwise any.",
+    )
+    args = parser.parse_args(argv)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    if args.transport == "http":
+        anyio.run(_serve_http, args.host, args.port, args.allowed_hosts)
+        return
+
     try:
-        client = _get_client()  # fail fast on bad config, before the MCP handshake
+        conv = _local_conversation()  # fail fast on bad config, before the handshake
     except ConfigError as exc:
         print(f"everos-mcp: {exc}", file=sys.stderr)
         sys.exit(1)
     if not os.environ.get("EVEROS_USER_ID", "").strip():
         print(
-            f"everos-mcp: storing memories as user {client.settings.user_id!r} "
+            f"everos-mcp: storing memories as user {conv.settings.user_id!r} "
             "(set EVEROS_USER_ID to share one memory across machines)",
             file=sys.stderr,
         )
-    anyio.run(_serve)
+    anyio.run(_serve_stdio, conv)
 
 
-async def _serve() -> None:
+async def _serve_stdio(conv: Conversation) -> None:
     try:
         await mcp.run_stdio_async()
     finally:
         # The client closed the connection: give queued saves a chance to land
         # (best effort — the host may terminate the process sooner).
-        await _drain(timeout=30)
-        if _client is not None:
-            await _client.aclose()
+        await conv.drain(timeout=30)
+        await conv.client.aclose()
+
+
+@mcp.custom_route("/healthz", methods=["GET"])
+async def _healthz(_request: Request) -> Response:
+    return PlainTextResponse("ok")
+
+
+def http_app(registry: ConversationRegistry, allowed_hosts: str = "") -> ASGIApp:
+    """The streamable-HTTP app, behind a bearer check. The server holds no
+    credentials of its own: each request's key is forwarded to EverOS."""
+    global _registry
+    _registry = registry
+    hosts = [h.strip() for h in allowed_hosts.split(",") if h.strip()]
+    if hosts:
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=hosts,
+            allowed_origins=[f"https://{h}" for h in hosts],
+        )
+    elif mcp.settings.host not in ("127.0.0.1", "localhost", "::1"):
+        # Behind an ingress the Host header is the public name; every request
+        # still has to carry a valid API key, which a rebinding page lacks.
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
+    return _RequireBearer(mcp.streamable_http_app(), mcp.settings.streamable_http_path)
+
+
+class _RequireBearer:
+    """Reject MCP requests without credentials at the HTTP layer (401 +
+    WWW-Authenticate), as the MCP authorization spec expects of a protected
+    resource — the hook an OAuth flow will later plug into."""
+
+    def __init__(self, app: ASGIApp, path: str) -> None:
+        self.app = app
+        self.path = path
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["path"].startswith(self.path):
+            auth = Headers(scope=scope).get("authorization", "")
+            scheme, _, token = auth.partition(" ")
+            if scheme.lower() != "bearer" or not token.strip():
+                response = JSONResponse(
+                    {
+                        "error": "unauthorized",
+                        "message": "send 'Authorization: Bearer <EverOS API key>'",
+                    },
+                    status_code=401,
+                    headers={"WWW-Authenticate": 'Bearer realm="everos"'},
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+async def _serve_http(host: str, port: int, allowed_hosts: str) -> None:
+    import uvicorn
+
+    mcp.settings.host, mcp.settings.port = host, port
+    registry = ConversationRegistry(base_url_from_env())
+    app = http_app(registry, allowed_hosts)
+    print(
+        f"everos-mcp: serving MCP on http://{host}:{port}{mcp.settings.streamable_http_path}"
+        f" -> {registry.base_url}",
+        file=sys.stderr,
+    )
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="info"))
+    try:
+        await server.serve()
+    finally:
+        await registry.aclose()
 
 
 if __name__ == "__main__":

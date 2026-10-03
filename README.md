@@ -74,6 +74,47 @@ without a permission prompt; `forget_session` is marked destructive.
 Set `EVEROS_BASE_URL` to your own deployment. No API key is required when the
 URL is not an evermind.ai host.
 
+## Remote server (streamable HTTP)
+
+The same package runs as a shared, hosted MCP server. It holds no credentials
+of its own: every request brings the caller's EverOS API key, which is
+forwarded to the EverOS API and never stored.
+
+```bash
+everos-mcp --transport http --host 0.0.0.0 --port 8765
+```
+
+Clients connect with their own key:
+
+```bash
+claude mcp add --transport http everos https://mcp.example.com/mcp \
+  --header "Authorization: Bearer sk-..."
+```
+
+| Request header | Required | Meaning |
+|---|---|---|
+| `Authorization: Bearer <key>` | yes | The caller's EverOS API key. Missing → HTTP 401 with `WWW-Authenticate: Bearer` |
+| `X-EverOS-User-Id` | no | Whose memory within the key's space (default `default-user`) |
+
+| Server env var | Default | Meaning |
+|---|---|---|
+| `EVEROS_BASE_URL` | `https://api.evermind.ai` | EverOS API the server talks to |
+| `EVEROS_APP_ID` / `EVEROS_PROJECT_ID` | `default` | Business scope for every caller |
+| `EVEROS_MCP_HOST` / `EVEROS_MCP_PORT` | `127.0.0.1` / `8765` | Bind address (same as `--host` / `--port`) |
+| `EVEROS_MCP_ALLOWED_HOSTS` | — | Comma-separated public host names to accept (DNS-rebinding protection) |
+
+Deployment notes:
+
+- Terminate TLS at the ingress; `GET /healthz` is the liveness probe.
+- Each MCP session lives in the memory of the replica that created it. With
+  more than one replica, route by the `Mcp-Session-Id` header (sticky
+  sessions).
+- Conversations are isolated by (API key, user, MCP session): one caller never
+  sees another's session, background-save notes, or trajectories.
+- Hosts that only connect through OAuth (claude.ai connectors, ChatGPT) need an
+  authorization server in front; the 401 + `WWW-Authenticate` response is the
+  hook for it.
+
 ## Security
 
 Every write path runs a credential guard before content leaves the process.

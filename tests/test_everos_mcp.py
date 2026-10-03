@@ -14,6 +14,7 @@ import pytest
 from everos_mcp import server
 from everos_mcp.client import EverOSClient, EverOSError
 from everos_mcp.config import ConfigError, Settings
+from everos_mcp.conversation import Conversation, ConversationRegistry
 from everos_mcp.guard import find_secret, find_secret_in
 from everos_mcp.server import mcp
 
@@ -67,20 +68,15 @@ def tool_client(monkeypatch):
 
     def install(**kwargs):
         client, seen = make_client(**kwargs)
-        monkeypatch.setattr(server, "_client", client)
+        monkeypatch.setattr(server, "_local", Conversation(client))
         return seen
 
-    server._pending.clear()
-    server._notices.clear()
-    server._locks.clear()
-    server._trajectory_sessions.clear()
     yield install
-    server._notices.clear()
 
 
 async def call_and_drain(coro):
     result = await coro
-    await server._drain()
+    await server._local.drain()
     return result
 
 
@@ -226,13 +222,13 @@ def test_add_memory_background_returns_then_extracts(tool_client):
     async def scenario():
         reply = await server.add_memory(user_message="I prefer dark mode")
         assert "background" in reply
-        await server._drain()
+        await server._local.drain()
 
     run(scenario())
     assert paths(seen) == ["add", "flush"]
     assert sent(seen[0])["async_mode"] is False  # buffer write lands before flush
     assert sent(seen[0])["session_id"] == "s1"
-    assert not server._notices
+    assert not server._local.notices
 
 
 def test_add_memory_wait_skips_flush_when_already_extracted(tool_client):
@@ -251,12 +247,12 @@ def test_background_failure_surfaces_on_next_reply(tool_client):
 
     with pytest.raises(EverOSError):  # the search itself also hits the 500
         run(scenario())
-    assert server._notices and "boom" in server._notices[0]
+    assert server._local.notices and "boom" in server._local.notices[0]
 
 
 def test_notices_are_attached_once(tool_client):
     tool_client()
-    server._notices.append("background add_memory failed: boom")
+    server._local.notices.append("background add_memory failed: boom")
     first = run(server.search_memory("x"))
     second = run(server.search_memory("x"))
     assert "boom" in first and "boom" not in second
@@ -307,7 +303,7 @@ def test_record_trajectory_uses_its_own_session(tool_client):
     assert payload["session_id"] != SETTINGS.session_id
     assert paths(seen) == ["add"]  # already extracted: no redundant flush
     assert payload["messages"][1]["tool_calls"][0]["function"]["name"] == "t"
-    assert server._trajectory_sessions == [payload["session_id"]]
+    assert server._local.trajectory_sessions == [payload["session_id"]]
 
 
 def test_record_trajectory_validates_tool_messages(tool_client):
@@ -348,7 +344,7 @@ def test_forget_session_deletes_conversation_and_trajectories(tool_client):
     assert paths(seen) == ["add", "delete", "delete"]
     assert sent(seen[1])["session_id"] == "s1"
     assert sent(seen[2])["session_id"].startswith("traj-")
-    assert "Deleted 4" in reply and server._trajectory_sessions == []
+    assert "Deleted 4" in reply and server._local.trajectory_sessions == []
 
 
 def test_forget_session_explains_missing_delete_on_self_hosted(tool_client):
@@ -442,3 +438,103 @@ def test_guard_passes_normal_content(text):
 def test_guard_scans_nested_structures():
     assert find_secret_in({"a": [{"b": "ghp_abcdefghij0123456789abcdefghij"}]}) is not None
     assert find_secret_in({"a": [{"b": "nothing here"}]}) is None
+
+
+# -- remote (HTTP) mode -------------------------------------------------------------
+
+
+def make_registry():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"data": {"status": "extracted", "count": 1}})
+
+    reg = ConversationRegistry("https://gateway.test", transport=httpx.MockTransport(handler))
+    return reg, seen
+
+
+def hdrs(key="key-a", user=None, session="sess-1"):
+    h = {"authorization": f"Bearer {key}"}
+    if user:
+        h["x-everos-user-id"] = user
+    if session:
+        h["mcp-session-id"] = session
+    return h
+
+
+def test_registry_requires_bearer_and_valid_user():
+    reg, _ = make_registry()
+    with pytest.raises(EverOSError, match="missing API key"):
+        reg.resolve({})
+    with pytest.raises(EverOSError, match="missing API key"):
+        reg.resolve({"authorization": "Basic abc"})
+    with pytest.raises(EverOSError, match="x-everos-user-id"):
+        reg.resolve(hdrs(user="../etc"))
+
+
+def test_registry_reuses_conversation_per_session_and_isolates_keys(monkeypatch):
+    monkeypatch.setenv("EVEROS_ASSISTANT_SENDER_ID", "shared")  # ignored remotely
+    reg, _ = make_registry()
+    a1 = reg.resolve(hdrs("key-a", "alice"))
+    assert reg.resolve(hdrs("key-a", "alice")) is a1
+    b = reg.resolve(hdrs("key-b", "alice"))
+    other_session = reg.resolve(hdrs("key-a", "alice", session="sess-2"))
+    assert len({id(a1), id(b), id(other_session)}) == 3
+    assert a1.session_id != other_session.session_id
+    assert a1.settings.user_id == "alice"
+    assert a1.settings.assistant_sender_id == "assistant-alice"
+    assert reg.resolve(hdrs(user=None)).settings.user_id == "default-user"
+
+
+def test_registry_without_session_header_never_shares():
+    reg, _ = make_registry()
+    assert reg.resolve(hdrs(session=None)) is not reg.resolve(hdrs(session=None))
+    assert len(reg) == 0
+
+
+def test_registry_forwards_each_callers_key():
+    reg, seen = make_registry()
+
+    async def scenario():
+        await reg.resolve(hdrs("key-a")).client.search("x")
+        await reg.resolve(hdrs("key-b")).client.search("x")
+        await reg.aclose()
+
+    run(scenario())
+    assert [r.headers["authorization"] for r in seen] == ["Bearer key-a", "Bearer key-b"]
+
+
+def test_registry_evicts_idle_conversations():
+    reg, _ = make_registry()
+    reg._idle_seconds = -1  # everything counts as idle
+    reg.resolve(hdrs(session="s1"))
+    reg.resolve(hdrs(session="s2"))
+    assert len(reg) == 1
+
+
+def test_notices_do_not_cross_conversations():
+    reg, _ = make_registry()
+    a = reg.resolve(hdrs("key-a"))
+    b = reg.resolve(hdrs("key-b"))
+    a.notices.append("background add_memory failed: boom")
+    assert "boom" not in b.reply("ok")
+    assert "boom" in a.reply("ok")
+
+
+def test_http_app_rejects_missing_bearer_and_serves_health(monkeypatch):
+    reg, _ = make_registry()
+    monkeypatch.setattr(server, "_registry", None)
+    app = server.http_app(reg)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
+            denied = await c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+            health = await c.get("/healthz")
+        return denied, health
+
+    denied, health = run(scenario())
+    assert denied.status_code == 401
+    assert denied.headers["www-authenticate"].startswith("Bearer")
+    assert health.status_code == 200 and health.text == "ok"
