@@ -128,7 +128,7 @@ def _fmt_skill(skill: dict) -> str:
 # -- personal-memory tools ------------------------------------------------------
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(title="Search memory", annotations=_READ_ONLY)
 async def search_memory(
     query: str,
     top_k: int = 10,
@@ -168,7 +168,7 @@ async def search_memory(
     return conv.reply(_DATA_NOTE + "\n\n" + "\n\n".join(parts))
 
 
-@mcp.tool(annotations=_WRITE)
+@mcp.tool(title="Save to memory", annotations=_WRITE)
 async def add_memory(
     user_message: str = "",
     assistant_message: str = "",
@@ -223,7 +223,7 @@ async def add_memory(
     return conv.reply("Saved. Extraction is running in the background; searchable shortly.")
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(title="Get user profile", annotations=_READ_ONLY)
 async def get_profile(ctx: Context | None = None) -> str:
     """Get the synthesized profile of the user: stable facts, traits, and
     preferences distilled from all past sessions.
@@ -240,7 +240,7 @@ async def get_profile(ctx: Context | None = None) -> str:
     return conv.reply(_DATA_NOTE + "\n\n" + "\n\n".join(_fmt_profile(p) for p in profiles))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(title="List memories", annotations=_READ_ONLY)
 async def list_memories(
     memory_type: Literal["episode", "profile"] = "episode",
     page: int = 1,
@@ -265,7 +265,7 @@ async def list_memories(
     return conv.reply(f"{_DATA_NOTE}\n\n{total} total, page {page}:\n" + "\n".join(items))
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@mcp.tool(title="Forget this conversation", annotations=_DESTRUCTIVE)
 async def forget_session(include_trajectories: bool = True, ctx: Context | None = None) -> str:
     """Delete what was stored through this connection: the memories extracted
     from this conversation and, unless include_trajectories=false, the cases
@@ -326,7 +326,7 @@ def _normalize_tool_calls(tool_calls: list[dict]) -> list[dict]:
     return out
 
 
-@mcp.tool(annotations=_WRITE)
+@mcp.tool(title="Record task trajectory", annotations=_WRITE)
 async def record_trajectory(messages: list[dict[str, Any]], ctx: Context | None = None) -> str:
     """Record how a task was solved so the approach can be reused in future
     sessions. EverOS distills trajectories into cases (concrete solutions) and
@@ -391,7 +391,7 @@ async def record_trajectory(messages: list[dict[str, Any]], ctx: Context | None 
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(title="Recall past experience", annotations=_READ_ONLY)
 async def recall_agent_experience(
     task: str,
     kind: Literal["case", "skill", "both"] = "both",

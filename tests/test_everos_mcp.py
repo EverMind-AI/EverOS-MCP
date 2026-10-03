@@ -387,6 +387,8 @@ def test_tools_registered_with_annotations():
     for name in ("search_memory", "get_profile", "list_memories", "recall_agent_experience"):
         assert tools[name].annotations.readOnlyHint is True
     assert tools["forget_session"].annotations.destructiveHint is True
+    # The Connectors Directory requires a title on every tool.
+    assert all(t.title for t in tools.values())
     assert tools["add_memory"].annotations.destructiveHint is False
 
 
