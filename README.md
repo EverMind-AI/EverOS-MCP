@@ -18,8 +18,7 @@ context, and recall a synthesized user profile across sessions.
       "command": "uvx",
       "args": ["everos-mcp"],
       "env": {
-        "EVEROS_API_KEY": "sk-...",
-        "EVEROS_USER_ID": "your-stable-user-id"
+        "EVEROS_API_KEY": "sk-..."
       }
     }
   }
@@ -29,7 +28,7 @@ context, and recall a synthesized user profile across sessions.
 Claude Code one-liner:
 
 ```bash
-claude mcp add everos -e EVEROS_API_KEY=sk-... -e EVEROS_USER_ID=me -- uvx everos-mcp
+claude mcp add everos -e EVEROS_API_KEY=sk-... -- uvx everos-mcp
 ```
 
 ## Tools
@@ -37,12 +36,12 @@ claude mcp add everos -e EVEROS_API_KEY=sk-... -e EVEROS_USER_ID=me -- uvx evero
 | Tool | Purpose |
 |---|---|
 | `search_memory` | Relevance search over stored memories (optionally with the user profile) |
-| `add_memory` | Store a durable fact or exchange; extracted immediately by default |
-| `flush_memory` | Force extraction of messages buffered with `flush_now=false` |
+| `add_memory` | Store a durable fact or exchange; saves in the background by default (`wait=true` to block until it is searchable) |
 | `get_profile` | The synthesized user profile (facts, traits, preferences) |
 | `list_memories` | Chronological, paginated browsing |
+| `forget_session` | Delete what this connection stored (memories + trajectories); the profile is kept |
 | `record_trajectory` | Record how a task was solved (incl. tool calls) for future reuse |
-| `recall_agent_experience` | Recall distilled cases/skills before a similar task |
+| `recall_agent_experience` | Search distilled cases/skills relevant to the task at hand |
 
 Trajectories need more than three tool-call rounds to pass the distillation
 quality gate; shorter ones are stored as episodes but produce no case.
@@ -52,18 +51,23 @@ honour the field make the model load the profile at session start, store
 stated facts, and recall past context without being asked.
 
 Note: profile updates and agent case/skill distillation run in an offline
-pipeline and land seconds to minutes after the write.
+pipeline and land seconds to minutes after the write. A background save that
+fails is reported on the next tool result, so the model never silently
+believes something was remembered.
+
+Read-only tools carry MCP `readOnlyHint` annotations, so hosts can run them
+without a permission prompt; `forget_session` is marked destructive.
 
 ## Configuration
 
 | Env var | Required | Default | Meaning |
 |---|---|---|---|
 | `EVEROS_API_KEY` | yes (cloud) | — | API key; issued per environment |
-| `EVEROS_USER_ID` | yes | — | Stable id owning the memories |
+| `EVEROS_USER_ID` | no | your OS user name | Id owning the memories. Set the same value on every machine to share one memory; letters, digits and `_ . @ + -` only |
 | `EVEROS_BASE_URL` | no | `https://api.evermind.ai` | API endpoint; point at your own deployment for self-hosted EverOS |
 | `EVEROS_APP_ID` / `EVEROS_PROJECT_ID` | no | `default` | Business scope |
-| `EVEROS_SESSION_ID` | no | `mcp-<user_id>` | Conversation buffer key |
-| `EVEROS_ASSISTANT_SENDER_ID` | no | `assistant` | `sender_id` used for assistant messages |
+| `EVEROS_SESSION_ID` | no | `mcp-<user_id>-<random>` | Conversation buffer key; a fresh one per server process, so two clients never share a buffer |
+| `EVEROS_ASSISTANT_SENDER_ID` | no | `assistant-<user_id>` | Agent identity for trajectories and recalled experience. Per user by default; set the same value for everyone to pool agent experience across a team (their trajectories then become visible to each other) |
 
 ## Self-hosted / open-source EverOS
 
@@ -72,10 +76,16 @@ URL is not an evermind.ai host.
 
 ## Security
 
-Every write path runs a credential guard before content leaves the process:
-high-confidence secret formats (API keys, AWS/GitHub/Slack tokens, private
-keys, JWTs, URLs with embedded passwords) are refused with no bypass flag —
-long-term memory is not a safe place for secrets. Store a reference instead.
+Every write path runs a credential guard before content leaves the process.
+It scans every string in the payload — including trajectory tool-call
+arguments and tool results — for high-confidence secret formats (API keys,
+AWS/GitHub/Slack/Stripe tokens, private keys, JWTs, bearer tokens, URLs with
+embedded passwords, `password=`/`api_key:`-style assignments) and refuses the
+write with no bypass flag — long-term memory is not a safe place for secrets.
+Store a reference instead.
+
+Recalled memories are returned marked as stored data, and the server
+instructions tell the model never to follow directions found inside them.
 
 ## Development
 
