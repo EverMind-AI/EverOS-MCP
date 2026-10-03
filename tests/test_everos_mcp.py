@@ -16,6 +16,7 @@ from everos_mcp.client import EverOSClient, EverOSError
 from everos_mcp.config import ConfigError, Settings
 from everos_mcp.conversation import Conversation, ConversationRegistry
 from everos_mcp.guard import find_secret, find_secret_in
+from everos_mcp.oauth import IntrospectionUnavailable, Introspector, InvalidToken
 from everos_mcp.server import mcp
 
 SETTINGS = Settings(
@@ -581,3 +582,93 @@ def test_http_app_without_authorization_server_has_no_metadata(monkeypatch):
             return await c.get("/.well-known/oauth-protected-resource")
 
     assert run(scenario()).status_code == 404
+
+
+# -- OAuth mode: token introspection -----------------------------------------------
+
+RESOURCE = "https://mcp.example.com/mcp"
+
+
+def make_introspector(answer, status=200):
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status, json=answer)
+
+    intro = Introspector(
+        "https://auth.example.com/introspect",
+        secret="s3cret",
+        resource=RESOURCE,
+        transport=httpx.MockTransport(handler),
+    )
+    return intro, seen
+
+
+ACTIVE = {"active": True, "aud": RESOURCE, "sub": "user-1", "everos_api_key": "sk-granted"}
+
+
+def test_introspection_exchanges_token_for_granted_key_and_caches():
+    intro, seen = make_introspector(ACTIVE)
+
+    async def scenario():
+        first = await intro.identify("tok")
+        second = await intro.identify("tok")
+        return first, second
+
+    first, second = run(scenario())
+    assert first.api_key == "sk-granted" and first.user_id == "user-1"
+    assert second is first and len(seen) == 1
+    assert seen[0].headers["authorization"] == "Bearer s3cret"
+    assert b"token=tok" in seen[0].content
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [{"active": False}, {**ACTIVE, "aud": "https://other.example.com/mcp"}],
+)
+def test_introspection_rejects_inactive_or_foreign_tokens(answer):
+    intro, _ = make_introspector(answer)
+    with pytest.raises(InvalidToken):
+        run(intro.identify("tok"))
+
+
+@pytest.mark.parametrize(
+    "answer,status", [({}, 500), ({k: v for k, v in ACTIVE.items() if k != "everos_api_key"}, 200)]
+)
+def test_introspection_failures_are_not_auth_failures(answer, status):
+    intro, _ = make_introspector(answer, status)
+    with pytest.raises(IntrospectionUnavailable):
+        run(intro.identify("tok"))
+
+
+def test_registry_uses_verified_identity_over_headers():
+    from everos_mcp.oauth import Identity
+
+    reg, _ = make_registry()
+    conv = reg.resolve(
+        {"authorization": "Bearer oauth-token", "x-everos-user-id": "mallory"},
+        Identity(api_key="sk-granted", user_id="user-1"),
+    )
+    assert conv.settings.api_key == "sk-granted" and conv.settings.user_id == "user-1"
+
+
+def test_http_app_oauth_mode_rejects_invalid_token(monkeypatch):
+    reg, _ = make_registry()
+    intro, _ = make_introspector({"active": False})
+    monkeypatch.setattr(server, "_registry", None)
+    app = server.http_app(
+        reg,
+        public_url="https://mcp.example.com",
+        authorization_server="https://auth.example.com",
+        introspector=intro,
+    )
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
+            return await c.post("/mcp", json={}, headers={"Authorization": "Bearer bad"})
+
+    denied = run(scenario())
+    assert denied.status_code == 401
+    assert 'error="invalid_token"' in denied.headers["www-authenticate"]

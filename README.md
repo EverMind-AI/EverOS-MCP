@@ -103,7 +103,8 @@ claude mcp add --transport http everos https://mcp.example.com/mcp \
 | `EVEROS_MCP_HOST` / `EVEROS_MCP_PORT` | `127.0.0.1` / `8765` | Bind address (same as `--host` / `--port`) |
 | `EVEROS_MCP_ALLOWED_HOSTS` | — | Comma-separated public host names to accept (DNS-rebinding protection) |
 | `EVEROS_MCP_PUBLIC_URL` | — | Public base URL of this server, e.g. `https://mcp.example.com` |
-| `EVEROS_MCP_AUTHORIZATION_SERVER` | — | OAuth issuer that signs users in. When set, the server publishes RFC 9728 metadata at `/.well-known/oauth-protected-resource/mcp` and points to it from the 401 challenge. Its access tokens must be EverOS API keys |
+| `EVEROS_MCP_AUTHORIZATION_SERVER` | — | OAuth issuer that signs users in. When set, the server publishes RFC 9728 metadata at `/.well-known/oauth-protected-resource/mcp` and points to it from the 401 challenge |
+| `EVEROS_MCP_INTROSPECTION_URL` / `EVEROS_MCP_INTROSPECTION_SECRET` | — | OAuth mode: bearer tokens are verified at this RFC 7662 endpoint (audience must be this server) and exchanged for the EverOS API key the user granted. The token itself is never forwarded upstream, as the MCP authorization spec requires. Contract: `src/everos_mcp/oauth.py` |
 
 Deployment notes:
 

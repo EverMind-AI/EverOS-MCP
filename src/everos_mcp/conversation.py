@@ -20,6 +20,7 @@ import httpx
 
 from .client import EverOSClient, EverOSError, make_http
 from .config import Settings, valid_id
+from .oauth import Identity
 
 log = logging.getLogger("everos_mcp")
 
@@ -124,7 +125,28 @@ class ConversationRegistry:
         self._idle_seconds = idle_seconds
         self._max_size = max_size
 
-    def resolve(self, headers: Mapping[str, str]) -> Conversation:
+    def resolve(self, headers: Mapping[str, str], identity: Identity | None = None) -> Conversation:
+        """`identity` comes from a verified OAuth token (OAuth mode); without
+        it the bearer token is the caller's own EverOS API key."""
+        if identity is not None:
+            api_key, user_id = identity.api_key, identity.user_id
+        else:
+            api_key, user_id = self._api_key_identity(headers)
+        mcp_session = headers.get("mcp-session-id", "").strip()
+        if not mcp_session:
+            # Stateless client: nothing ties its calls together, so each call
+            # is its own conversation.
+            return self._new(api_key, user_id)
+        key = (hashlib.sha256(api_key.encode()).hexdigest(), user_id, mcp_session)
+        conv = self._items.get(key)
+        if conv is None:
+            self._evict()
+            conv = self._items[key] = self._new(api_key, user_id)
+        conv.last_used = time.monotonic()
+        return conv
+
+    @staticmethod
+    def _api_key_identity(headers: Mapping[str, str]) -> tuple[str, str]:
         auth = headers.get("authorization", "")
         scheme, _, api_key = auth.partition(" ")
         api_key = api_key.strip()
@@ -139,18 +161,7 @@ class ConversationRegistry:
                 "invalid_argument",
                 f"{USER_HEADER} may only contain letters, digits and _ . @ + -",
             )
-        mcp_session = headers.get("mcp-session-id", "").strip()
-        if not mcp_session:
-            # Stateless client: nothing ties its calls together, so each call
-            # is its own conversation.
-            return self._new(api_key, user_id)
-        key = (hashlib.sha256(api_key.encode()).hexdigest(), user_id, mcp_session)
-        conv = self._items.get(key)
-        if conv is None:
-            self._evict()
-            conv = self._items[key] = self._new(api_key, user_id)
-        conv.last_used = time.monotonic()
-        return conv
+        return api_key, user_id
 
     def _new(self, api_key: str, user_id: str) -> Conversation:
         settings = Settings.remote(api_key=api_key, user_id=user_id, base_url=self.base_url)
