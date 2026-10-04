@@ -63,7 +63,7 @@ without a permission prompt; `forget_session` is marked destructive.
 | Env var | Required | Default | Meaning |
 |---|---|---|---|
 | `EVEROS_API_KEY` | yes (cloud) | — | API key; issued per environment |
-| `EVEROS_USER_ID` | no | your OS user name | Id owning the memories. Set the same value on every machine to share one memory; letters, digits and `_ . @ + -` only |
+| `EVEROS_USER_ID` | no | your OS user name | Id owning the memories. Set the same value on every machine to share one memory; up to 100 letters, digits and `_ . @ + -` |
 | `EVEROS_BASE_URL` | no | `https://api.evermind.ai` | API endpoint; point at your own deployment for self-hosted EverOS |
 | `EVEROS_APP_ID` / `EVEROS_PROJECT_ID` | no | `default` | Business scope |
 | `EVEROS_SESSION_ID` | no | `mcp-<user_id>-<random>` | Conversation buffer key; a fresh one per server process, so two clients never share a buffer |

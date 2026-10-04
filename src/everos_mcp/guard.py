@@ -41,15 +41,18 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
-def find_secret(text: str) -> str | None:
+def find_secret(text: str, patterns: list[tuple[str, re.Pattern[str]]] = _PATTERNS) -> str | None:
     """Return a human-readable finding like 'API key (sk-proj…Q4x)', or None."""
-    for kind, pattern in _PATTERNS:
+    for kind, pattern in patterns:
         m = pattern.search(text)
         if m:
             token = m.group(0)
             masked = token[:7] + "…" + token[-3:] if len(token) > 13 else token[:4] + "…"
             return f"{kind} ({masked})"
     return None
+
+
+_ASSIGNMENT = [p for p in _PATTERNS if p[0] == "secret assignment"]
 
 
 def _strings(value: Any) -> Iterator[str]:
@@ -68,11 +71,14 @@ def find_secret_in(value: Any) -> str | None:
     """Scan every string nested anywhere in `value` — message content, tool-call
     arguments, tool results — not just the top-level text.
 
-    Two passes: the strings alone (catches values inside JSON-encoded
-    strings), and the structure serialized as JSON (keeps a key next to its
-    value, so `{"password": "..."}` reads as an assignment)."""
+    Two passes: every pattern over the strings alone (catches values inside
+    JSON-encoded strings), then the assignment pattern alone over the
+    structure serialized as JSON, which keeps a key next to its value so
+    `{"password": "..."}` reads as an assignment. Only that pattern: JSON
+    escapes newlines into literal `\\n`, which would let the others match
+    across what were separate lines."""
     return find_secret("\n".join(_strings(value))) or find_secret(
-        json.dumps(value, ensure_ascii=False, default=str)
+        json.dumps(value, ensure_ascii=False, default=str), _ASSIGNMENT
     )
 
 

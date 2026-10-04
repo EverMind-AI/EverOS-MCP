@@ -170,7 +170,7 @@ class ConversationRegistry:
         if not valid_id(user_id):
             raise EverOSError(
                 "invalid_argument",
-                f"{USER_HEADER} may only contain letters, digits and _ . @ + -",
+                f"{USER_HEADER} must be at most 100 letters, digits and _ . @ + -",
             )
         return api_key, user_id
 
@@ -192,9 +192,15 @@ class ConversationRegistry:
         for k in idle:
             del self._items[k]
         if len(self._items) >= self._max_size:
-            # Still full of live conversations: drop the least recently used.
-            oldest = sorted(self._items, key=lambda k: self._items[k].last_used)
-            for k in oldest[: len(self._items) - self._max_size + 1]:
+            # Still full: drop the least recently used, but never one with a
+            # save in flight — its outcome note, its shutdown drain and its
+            # add/flush lock all live on it. If every one is busy, the map
+            # runs over its cap until saves finish.
+            idle_lru = sorted(
+                (k for k, c in self._items.items() if not c.busy),
+                key=lambda k: self._items[k].last_used,
+            )
+            for k in idle_lru[: len(self._items) - self._max_size + 1]:
                 del self._items[k]
 
     async def aclose(self, drain_timeout: float = 30) -> None:

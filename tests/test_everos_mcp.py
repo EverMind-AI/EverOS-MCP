@@ -746,3 +746,31 @@ def test_http_app_refuses_half_configured_oauth(monkeypatch):
         server.http_app(
             reg, public_url="https://mcp.example.com", authorization_server="https://a.example"
         )
+
+
+def test_user_ids_leave_room_for_derived_ids(monkeypatch):
+    monkeypatch.setenv("EVEROS_API_KEY", "k")
+    monkeypatch.setenv("EVEROS_USER_ID", "u" * 100)
+    s = Settings.from_env()
+    assert len(s.session_id) <= 128 and len(s.assistant_sender_id) <= 128
+    monkeypatch.setenv("EVEROS_USER_ID", "u" * 101)
+    with pytest.raises(ConfigError, match="at most 100"):
+        Settings.from_env()
+    reg, _ = make_registry()
+    with pytest.raises(EverOSError):
+        reg.resolve(hdrs(user="u" * 101))
+    assert len(reg.resolve(hdrs(user="u" * 100)).session_id) <= 128
+
+
+def test_guard_json_pass_does_not_match_across_lines():
+    text = "ready at http://localhost:3000\ngit@github.com:org/repo.git"
+    assert find_secret_in([{"content": text}]) is None
+
+
+def test_eviction_never_drops_a_conversation_with_saves_in_flight():
+    reg, _ = make_registry()
+    reg._max_size = 1
+    busy = reg.resolve(hdrs(session="s1"))
+    busy._pending.add(object())  # stands in for a running save
+    reg.resolve(hdrs(session="s2"))
+    assert reg.resolve(hdrs(session="s1")) is busy

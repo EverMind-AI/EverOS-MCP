@@ -16,8 +16,11 @@ from urllib.parse import urlparse
 PROD_BASE_URL = "https://api.evermind.ai"
 
 # The id charset both the cloud and the self-hosted server accept (ids become
-# path segments on self-hosted EverOS).
-_ID_RE = re.compile(r"[A-Za-z0-9_.@+-]{1,128}")
+# path segments on self-hosted EverOS). EverOS caps session and sender ids at
+# 128 characters, and the ids derived from a user id add up to 17
+# ("mcp-" + "-" + 12 hex), so a user id stops at 100.
+MAX_USER_ID = 100
+_ID_RE = re.compile(rf"[A-Za-z0-9_.@+-]{{1,{MAX_USER_ID}}}")
 
 
 def default_user_id() -> str:
@@ -25,7 +28,7 @@ def default_user_id() -> str:
         name = getpass.getuser()
     except (KeyError, OSError):  # no passwd entry / no login name (containers)
         name = ""
-    name = re.sub(r"[^A-Za-z0-9_.@+-]", "-", name).strip("-")[:128]
+    name = re.sub(r"[^A-Za-z0-9_.@+-]", "-", name).strip("-")[:MAX_USER_ID]
     return name or "default-user"
 
 
@@ -60,8 +63,8 @@ class Settings:
         user_id = os.environ.get("EVEROS_USER_ID", "").strip()
         if user_id and not valid_id(user_id):
             raise ConfigError(
-                f"EVEROS_USER_ID {user_id!r} may only contain letters, digits "
-                "and the characters _ . @ + -"
+                f"EVEROS_USER_ID {user_id!r} must be at most {MAX_USER_ID} letters, "
+                "digits and the characters _ . @ + -"
             )
         # Optional: default to the OS account so a cloud user only has to set
         # the API key. Set it explicitly to share one memory across machines.
