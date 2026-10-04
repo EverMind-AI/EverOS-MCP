@@ -351,6 +351,16 @@ def _normalize_tool_calls(tool_calls: list[dict]) -> list[dict]:
     out = []
     for tc in tool_calls:
         if "function" in tc:
+            fn = tc["function"]
+            if isinstance(fn, dict) and not isinstance(fn.get("arguments", ""), str):
+                # The API takes arguments as a JSON-encoded string only.
+                tc = {
+                    **tc,
+                    "function": {
+                        **fn,
+                        "arguments": json.dumps(fn["arguments"], ensure_ascii=False),
+                    },
+                }
             out.append(tc)
         else:
             args = tc.get("arguments", "{}")

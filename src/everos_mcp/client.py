@@ -81,7 +81,9 @@ class EverOSClient:
                 timeout=WRITE_TIMEOUT if write else READ_TIMEOUT,
             )
         except httpx.TimeoutException as exc:
-            if write and not isinstance(exc, httpx.ConnectTimeout):
+            # Connect and pool timeouts happen before the request is sent, so
+            # nothing can have been stored and a retry is safe.
+            if write and not isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout)):
                 # The request reached the server; it may well have been applied.
                 raise EverOSError(
                     "timeout",

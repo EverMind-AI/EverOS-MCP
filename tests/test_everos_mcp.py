@@ -981,3 +981,48 @@ def test_replay_hands_the_body_over_once():
     first, second = run(scenario())
     assert first == {"type": "http.request", "body": b"abc", "more_body": False}
     assert second["type"] == "http.disconnect"
+
+
+# -- fifth review -------------------------------------------------------------------
+
+
+def test_pool_timeout_is_safe_to_retry():
+    client, _ = make_client(raise_exc=httpx.PoolTimeout("busy"))
+    with pytest.raises(EverOSError) as info:
+        run(client.add([], session_id="s1", sync=True))
+    assert info.value.code == "unavailable"
+
+
+def test_wire_shape_tool_call_arguments_become_a_string():
+    out = server._normalize_tool_calls(
+        [{"id": "c1", "type": "function", "function": {"name": "db", "arguments": {"q": 1}}}]
+    )
+    assert out[0]["function"]["arguments"] == '{"q": 1}'
+    kept = server._normalize_tool_calls(
+        [{"id": "c1", "type": "function", "function": {"name": "db", "arguments": "{}"}}]
+    )
+    assert kept[0]["function"]["arguments"] == "{}"
+
+
+def test_leftover_from_a_failed_flush_is_flushed_on_its_own(monkeypatch):
+    calls: list[str] = []
+    fail = {"flush": 1}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        ep = request.url.path.rsplit("/", 1)[-1]
+        calls.append(ep)
+        if ep == "flush" and fail["flush"]:
+            fail["flush"] -= 1
+            return httpx.Response(500, json={"error": {"code": "internal", "message": "boom"}})
+        return httpx.Response(200, json={"data": {"status": "extracted"}})
+
+    conv = Conversation(EverOSClient(SETTINGS, transport=httpx.MockTransport(handler)))
+
+    async def scenario():
+        with pytest.raises(EverOSError):
+            await conv.store([{"role": "user", "content": "personal"}], conv.session_id)
+        return await conv.store([{"role": "user", "content": "trajectory"}], conv.session_id)
+
+    assert run(scenario()) == "extracted"
+    # failed store: add, flush(500) | next store: flush leftover, add, flush
+    assert calls == ["add", "flush", "flush", "add", "flush"]

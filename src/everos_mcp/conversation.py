@@ -55,6 +55,9 @@ class Conversation:
         # buffer extracted, so a trajectory never mixes with earlier messages
         # and each store is extracted as its own unit.
         self._lock = asyncio.Lock()
+        # Set while a store is between its add and a successful flush. A store
+        # that failed there may have left messages in the session buffer.
+        self._unflushed = False
         self.last_used = time.monotonic()
         # When record_trajectory last ran: cases are distilled from it after
         # extraction, so a delete soon after can miss one still in progress.
@@ -110,12 +113,20 @@ class Conversation:
             return await self._add_and_flush(messages, session_id)
 
     async def _add_and_flush(self, messages: list[dict[str, Any]], session_id: str) -> str | None:
+        if self._unflushed:
+            # The last store failed after its add: close what it left in the
+            # buffer on its own first, so it is not extracted together with
+            # this store (personal messages inside a trajectory's case).
+            await self.client.flush(session_id)
+            self._unflushed = False
+        self._unflushed = True
         # Synchronous add: the buffer write has landed before the flush runs.
         added = (await self.client.add(messages, session_id=session_id, sync=True)).get("status")
         # Always flush: an add answering "extracted" only means at least one
         # cell closed — boundary detection leaves the open tail buffered. The
         # flush closes it, so every store ends with an empty buffer.
         flushed = (await self.client.flush(session_id)).get("status")
+        self._unflushed = False
         return "extracted" if "extracted" in (added, flushed) else flushed or added
 
     async def store_in_background(
