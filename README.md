@@ -138,6 +138,19 @@ uv run ruff check . && uv run pytest      # offline: wire contract, tools, guard
 EVEROS_API_KEY=... EVEROS_USER_ID=... python scripts/smoke_test.py   # live e2e
 ```
 
+## Releasing
+
+Bump `version` in `pyproject.toml` and `__version__` in
+`src/everos_mcp/__init__.py`, merge, then push a matching tag:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` tests, builds and smoke-tests the wheel, waits
+for approval on the `release` environment, publishes to PyPI through Trusted
+Publishing (no stored token), and drafts the GitHub Release.
+
 ## License
 
 MIT
