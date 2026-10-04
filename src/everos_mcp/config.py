@@ -22,7 +22,8 @@ MAX_USER_ID = 100
 _ID_RE = re.compile(rf"[A-Za-z0-9_.@+-]{{1,{MAX_USER_ID}}}")
 
 # Owner of the memories when no user id is configured: one memory per API key,
-# the same on every machine (as in EverOS's Claude Code plugin).
+# the same on every machine. The EverOS API has no default user; this value is
+# this server's own choice.
 DEFAULT_USER_ID = "default-user"
 
 
@@ -112,7 +113,9 @@ def base_url_from_env() -> str:
 
 
 def valid_id(value: str) -> bool:
-    return bool(_ID_RE.fullmatch(value))
+    # "." and ".." are refused too: self-hosted EverOS turns ids into path
+    # segments and rejects them.
+    return bool(_ID_RE.fullmatch(value)) and value not in (".", "..")
 
 
 def _env_scope(var: str) -> str:

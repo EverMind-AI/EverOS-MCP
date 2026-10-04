@@ -106,6 +106,11 @@ def _conversation(ctx: Context | None) -> Conversation:
     return _registry.resolve(request.headers, identity)
 
 
+def _top_k(value: int) -> int:
+    """The EverOS search range: -1 lets the engine choose, else 1..100."""
+    return -1 if value == -1 else max(1, min(value, 100))
+
+
 # -- formatting helpers -------------------------------------------------------
 
 
@@ -148,7 +153,7 @@ def _fmt_skill(skill: dict) -> str:
 @mcp.tool(title="Search memory", annotations=_READ_ONLY)
 async def search_memory(
     query: str,
-    top_k: int = 10,
+    top_k: int = -1,
     include_profile: bool = False,
     ctx: Context | None = None,
 ) -> str:
@@ -162,14 +167,13 @@ async def search_memory(
     `query` is KEYWORDS ONLY: two to eight words naming the topic. Never paste
     the user's whole message, a file, or a transcript — long queries search
     worse. Memories saved in the last minute may not be indexed yet;
-    list_memories shows them sooner.
+    list_memories shows them sooner. `top_k`: -1 (default) lets EverOS decide
+    how many results to return; otherwise 1-100.
     """
     conv = _conversation(ctx)
     if not query.strip():
         return conv.reply("Error: query must be non-empty keywords.")
-    data = await conv.client.search(
-        query, top_k=max(1, min(top_k, 100)), include_profile=include_profile
-    )
+    data = await conv.client.search(query, top_k=_top_k(top_k), include_profile=include_profile)
     parts: list[str] = []
     episodes = data.get("episodes") or []
     if episodes:
@@ -430,7 +434,7 @@ async def record_trajectory(messages: list[dict[str, Any]], ctx: Context | None 
 async def recall_agent_experience(
     task: str,
     kind: Literal["case", "skill", "both"] = "both",
-    top_k: int = 5,
+    top_k: int = -1,
     ctx: Context | None = None,
 ) -> str:
     """Recall past problem-solving experience relevant to a task: cases are
@@ -439,12 +443,13 @@ async def recall_agent_experience(
 
     Call this at the start of a non-trivial task to reuse proven approaches
     instead of solving from scratch. `task` is a SHORT description of the
-    task at hand (a few keywords), used to find relevant experience.
+    task at hand (a few keywords), used to find relevant experience. `top_k`:
+    -1 (default) lets EverOS decide how many; otherwise 1-100.
     """
     conv = _conversation(ctx)
     if not task.strip():
         return conv.reply("Error: task must describe the task at hand in a few keywords.")
-    data = await conv.client.search(task, top_k=max(1, min(top_k, 50)), agent=True)
+    data = await conv.client.search(task, top_k=_top_k(top_k), agent=True)
     parts: list[str] = []
     if kind in ("case", "both"):
         cases = data.get("agent_cases") or []

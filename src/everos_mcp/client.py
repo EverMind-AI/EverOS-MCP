@@ -158,7 +158,7 @@ class EverOSClient:
         self,
         query: str,
         *,
-        top_k: int = 10,
+        top_k: int = -1,
         method: str = "hybrid",
         include_profile: bool = False,
         agent: bool = False,

@@ -232,11 +232,18 @@ def test_add_memory_background_returns_then_extracts(tool_client):
     assert not server._local.notices
 
 
-def test_add_memory_wait_skips_flush_when_already_extracted(tool_client):
-    seen = tool_client(routes={"add": {"data": {"status": "extracted"}}})
+def test_add_memory_always_flushes_the_open_tail(tool_client):
+    # "extracted" from add means at least one cell closed; the tail can still
+    # be buffered, so the flush always runs and "extracted" from either counts.
+    seen = tool_client(
+        routes={
+            "add": {"data": {"status": "extracted"}},
+            "flush": {"data": {"status": "no_extraction"}},
+        }
+    )
     reply = run(server.add_memory(user_message="x", wait=True))
     assert "now searchable" in reply
-    assert paths(seen) == ["add"]
+    assert paths(seen) == ["add", "flush"]
 
 
 def test_background_failure_surfaces_on_next_reply(tool_client):
@@ -302,7 +309,7 @@ def test_record_trajectory_lands_in_the_conversation_session(tool_client):
     payload = sent(seen[0])
     # Same session as the conversation, so one forget_session reaches it.
     assert payload["session_id"] == SETTINGS.session_id
-    assert paths(seen) == ["add"]  # already extracted: no redundant flush
+    assert paths(seen) == ["add", "flush"]
     assert payload["messages"][1]["tool_calls"][0]["function"]["name"] == "t"
 
 
@@ -341,8 +348,8 @@ def test_forget_session_is_one_owner_less_session_delete(tool_client):
         return await server.forget_session()  # must drain the queued add first
 
     reply = run(scenario())
-    assert paths(seen) == ["add", "delete"]
-    delete = sent(seen[1])
+    assert paths(seen) == ["add", "flush", "delete"]
+    delete = sent(seen[2])
     # No owner: one delete covers the user's memories and the agent's cases.
     assert delete["session_id"] == "s1" and "user_id" not in delete and "agent_id" not in delete
     assert "Deleted 4" in reply
@@ -736,7 +743,7 @@ def test_ephemeral_conversation_waits_and_has_nothing_to_forget(monkeypatch):
     saved, forgot = run(scenario())
     assert "now searchable" in saved  # waited instead of backgrounding
     assert "Nothing to forget" in forgot
-    assert [r.url.path.rsplit("/", 1)[-1] for r in seen] == ["add"]
+    assert [r.url.path.rsplit("/", 1)[-1] for r in seen] == ["add", "flush"]
 
 
 def test_http_app_refuses_half_configured_oauth(monkeypatch):
@@ -889,3 +896,20 @@ def test_guard_lets_secret_references_through():
 def test_guard_refusal_echoes_no_part_of_the_secret():
     finding = find_secret("my key is sk-proj-abc123DEF456ghi789jkl")
     assert finding == "API key"
+
+
+# -- API alignment -----------------------------------------------------------------
+
+
+def test_search_top_k_follows_the_api_range(tool_client):
+    seen = tool_client()
+    run(server.search_memory("tea"))
+    run(server.search_memory("tea", top_k=500))
+    run(server.recall_agent_experience("deploy", top_k=80))
+    assert [sent(r)["top_k"] for r in seen] == [-1, 100, 80]
+
+
+def test_dot_ids_are_refused():
+    from everos_mcp.config import valid_id
+
+    assert not valid_id(".") and not valid_id("..") and valid_id("a.b")

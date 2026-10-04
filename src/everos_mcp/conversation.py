@@ -106,11 +106,13 @@ class Conversation:
             return await self._add_and_flush(messages, session_id)
 
     async def _add_and_flush(self, messages: list[dict[str, Any]], session_id: str) -> str | None:
-        # Synchronous add: the buffer write has landed before any flush runs.
-        status = (await self.client.add(messages, session_id=session_id, sync=True)).get("status")
-        if status != "extracted":
-            status = (await self.client.flush(session_id)).get("status")
-        return status
+        # Synchronous add: the buffer write has landed before the flush runs.
+        added = (await self.client.add(messages, session_id=session_id, sync=True)).get("status")
+        # Always flush: an add answering "extracted" only means at least one
+        # cell closed — boundary detection leaves the open tail buffered. The
+        # flush closes it, so every store ends with an empty buffer.
+        flushed = (await self.client.flush(session_id)).get("status")
+        return "extracted" if "extracted" in (added, flushed) else flushed or added
 
     async def store_in_background(
         self, messages: list[dict[str, Any]], session_id: str, *, label: str
