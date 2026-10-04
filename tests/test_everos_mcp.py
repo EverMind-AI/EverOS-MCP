@@ -1002,6 +1002,11 @@ def test_wire_shape_tool_call_arguments_become_a_string():
         [{"id": "c1", "type": "function", "function": {"name": "db", "arguments": "{}"}}]
     )
     assert kept[0]["function"]["arguments"] == "{}"
+    # The API requires arguments; a missing one is filled like the flat shape.
+    missing = server._normalize_tool_calls(
+        [{"id": "c1", "type": "function", "function": {"name": "db"}}]
+    )
+    assert missing[0]["function"]["arguments"] == "{}"
 
 
 def test_leftover_from_a_failed_flush_is_flushed_on_its_own(monkeypatch):
