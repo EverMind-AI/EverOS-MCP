@@ -8,6 +8,7 @@ write — there is deliberately no bypass flag. Store a reference instead.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from typing import Any
@@ -65,8 +66,14 @@ def _strings(value: Any) -> Iterator[str]:
 
 def find_secret_in(value: Any) -> str | None:
     """Scan every string nested anywhere in `value` — message content, tool-call
-    arguments, tool results — not just the top-level text."""
-    return find_secret("\n".join(_strings(value)))
+    arguments, tool results — not just the top-level text.
+
+    Two passes: the strings alone (catches values inside JSON-encoded
+    strings), and the structure serialized as JSON (keeps a key next to its
+    value, so `{"password": "..."}` reads as an assignment)."""
+    return find_secret("\n".join(_strings(value))) or find_secret(
+        json.dumps(value, ensure_ascii=False, default=str)
+    )
 
 
 def refusal(finding: str) -> str:

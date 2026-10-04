@@ -43,6 +43,15 @@ class Identity:
     user_id: str
 
 
+def user_id_for(sub: str) -> str:
+    """The EverOS user id for an OAuth subject. Subjects that are already a
+    valid id are used as they are; others (`auth0|abc`, `google-oauth2|1…`)
+    are hashed, never collapsed into a shared default."""
+    if valid_id(sub):
+        return sub
+    return "oauth-" + hashlib.sha256(sub.encode()).hexdigest()[:32]
+
+
 class InvalidToken(Exception):
     """The token is unknown, expired, revoked, or not issued for this server."""
 
@@ -100,7 +109,10 @@ class Introspector:
         if not isinstance(api_key, str) or not api_key:
             raise IntrospectionUnavailable("introspection answer lacks everos_api_key")
         sub = str(body.get("sub") or "")
-        identity = Identity(api_key=api_key, user_id=sub if valid_id(sub) else "default-user")
+        if not sub:
+            # Without a subject every user would share one memory owner.
+            raise IntrospectionUnavailable("introspection answer lacks sub")
+        identity = Identity(api_key=api_key, user_id=user_id_for(sub))
 
         exp = body.get("exp")
         until = now + CACHE_SECONDS

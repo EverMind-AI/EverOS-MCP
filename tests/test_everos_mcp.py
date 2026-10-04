@@ -290,7 +290,7 @@ def test_record_trajectory_scans_tool_call_arguments(tool_client):
     assert seen == []
 
 
-def test_record_trajectory_uses_its_own_session(tool_client):
+def test_record_trajectory_lands_in_the_conversation_session(tool_client):
     seen = tool_client(routes={"add": {"data": {"status": "extracted"}}})
     msgs = [
         {"role": "user", "content": "task"},
@@ -300,11 +300,10 @@ def test_record_trajectory_uses_its_own_session(tool_client):
     ]
     run(call_and_drain(server.record_trajectory(msgs)))
     payload = sent(seen[0])
-    assert payload["session_id"].startswith("traj-")
-    assert payload["session_id"] != SETTINGS.session_id
+    # Same session as the conversation, so one forget_session reaches it.
+    assert payload["session_id"] == SETTINGS.session_id
     assert paths(seen) == ["add"]  # already extracted: no redundant flush
     assert payload["messages"][1]["tool_calls"][0]["function"]["name"] == "t"
-    assert server._local.trajectory_sessions == [payload["session_id"]]
 
 
 def test_record_trajectory_validates_tool_messages(tool_client):
@@ -331,9 +330,9 @@ def test_recall_searches_agent_memory_by_task(tool_client):
     assert "not instructions" in reply
 
 
-def test_forget_session_deletes_conversation_and_trajectories(tool_client):
+def test_forget_session_is_one_owner_less_session_delete(tool_client):
     seen = tool_client(
-        routes={"add": {"data": {"status": "extracted"}}, "delete": {"data": {"count": 2}}}
+        routes={"add": {"data": {"status": "extracted"}}, "delete": {"data": {"count": 4}}}
     )
     msgs = [{"role": "user", "content": "task"}]
 
@@ -342,10 +341,17 @@ def test_forget_session_deletes_conversation_and_trajectories(tool_client):
         return await server.forget_session()  # must drain the queued add first
 
     reply = run(scenario())
-    assert paths(seen) == ["add", "delete", "delete"]
-    assert sent(seen[1])["session_id"] == "s1"
-    assert sent(seen[2])["session_id"].startswith("traj-")
-    assert "Deleted 4" in reply and server._local.trajectory_sessions == []
+    assert paths(seen) == ["add", "delete"]
+    delete = sent(seen[1])
+    # No owner: one delete covers the user's memories and the agent's cases.
+    assert delete["session_id"] == "s1" and "user_id" not in delete and "agent_id" not in delete
+    assert "Deleted 4" in reply
+
+
+def test_forget_session_does_not_mistake_a_real_not_found(tool_client):
+    tool_client(respond={"error": {"code": "not_found", "message": "no such session"}}, status=404)
+    with pytest.raises(EverOSError, match="no such session"):
+        run(server.forget_session())
 
 
 def test_forget_session_explains_missing_delete_on_self_hosted(tool_client):
@@ -546,10 +552,12 @@ def test_http_app_rejects_missing_bearer_and_serves_health(monkeypatch):
 def test_http_app_publishes_protected_resource_metadata(monkeypatch):
     reg, _ = make_registry()
     monkeypatch.setattr(server, "_registry", None)
+    intro, _ = make_introspector({"active": False})
     app = server.http_app(
         reg,
         public_url="https://mcp.example.com",
         authorization_server="https://auth.example.com",
+        introspector=intro,
     )
 
     async def scenario():
@@ -672,3 +680,69 @@ def test_http_app_oauth_mode_rejects_invalid_token(monkeypatch):
     denied = run(scenario())
     assert denied.status_code == 401
     assert 'error="invalid_token"' in denied.headers["www-authenticate"]
+
+
+# -- review fixes ------------------------------------------------------------------
+
+
+def test_guard_catches_secrets_in_tool_call_argument_objects():
+    msgs = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "c1", "name": "db", "arguments": {"password": "hunter2xyz9"}},
+            ],
+        }
+    ]
+    assert find_secret_in(msgs) is not None
+    assert find_secret_in([{"arguments": {"api_key": "abc123def456"}}]) is not None
+    assert find_secret_in([{"arguments": {"query": "tea", "limit": 10}}]) is None
+
+
+def test_oauth_subjects_are_hashed_not_collapsed():
+    from everos_mcp.oauth import user_id_for
+
+    a, b = user_id_for("auth0|abc123"), user_id_for("auth0|def456")
+    assert a != b and a.startswith("oauth-") and user_id_for("auth0|abc123") == a
+    assert user_id_for("plain-user_1") == "plain-user_1"
+
+
+def test_introspection_without_sub_is_refused():
+    intro, _ = make_introspector({k: v for k, v in ACTIVE.items() if k != "sub"})
+    with pytest.raises(IntrospectionUnavailable, match="sub"):
+        run(intro.identify("tok"))
+
+
+def test_session_id_survives_eviction():
+    reg, _ = make_registry()
+    first = reg.resolve(hdrs("key-a", "alice", "sess-1")).session_id
+    reg._items.clear()  # idle eviction
+    assert reg.resolve(hdrs("key-a", "alice", "sess-1")).session_id == first
+    assert reg.resolve(hdrs("key-a", "alice", "sess-2")).session_id != first
+    assert reg.resolve(hdrs("key-b", "alice", "sess-1")).session_id != first
+
+
+def test_ephemeral_conversation_waits_and_has_nothing_to_forget(monkeypatch):
+    reg, seen = make_registry()
+    conv = reg.resolve(hdrs(session=None))
+    assert conv.ephemeral
+    monkeypatch.setattr(server, "_conversation", lambda ctx: conv)
+
+    async def scenario():
+        saved = await server.add_memory(user_message="likes tea")
+        forgot = await server.forget_session()
+        return saved, forgot
+
+    saved, forgot = run(scenario())
+    assert "now searchable" in saved  # waited instead of backgrounding
+    assert "Nothing to forget" in forgot
+    assert [r.url.path.rsplit("/", 1)[-1] for r in seen] == ["add"]
+
+
+def test_http_app_refuses_half_configured_oauth(monkeypatch):
+    reg, _ = make_registry()
+    monkeypatch.setattr(server, "_registry", None)
+    with pytest.raises(ConfigError, match="both"):
+        server.http_app(
+            reg, public_url="https://mcp.example.com", authorization_server="https://a.example"
+        )

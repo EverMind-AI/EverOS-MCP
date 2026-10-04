@@ -85,7 +85,7 @@ class Settings:
         )
 
     @classmethod
-    def remote(cls, *, api_key: str, user_id: str, base_url: str) -> Settings:
+    def remote(cls, *, api_key: str, user_id: str, base_url: str, session_id: str) -> Settings:
         """Settings for one conversation on the HTTP server: credentials and
         identity come from the request, the endpoint and scope from the
         operator. The agent identity is always per user here — a shared one
@@ -96,7 +96,7 @@ class Settings:
             user_id=user_id,
             app_id=_env_scope("EVEROS_APP_ID"),
             project_id=_env_scope("EVEROS_PROJECT_ID"),
-            session_id=f"mcp-{user_id}-{uuid.uuid4().hex[:12]}",
+            session_id=session_id,
             assistant_sender_id=f"assistant-{user_id}",
         )
 

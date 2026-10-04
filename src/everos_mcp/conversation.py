@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import logging
 import time
+import uuid
 from collections.abc import Awaitable, Mapping
 from typing import Any
 
@@ -29,18 +30,26 @@ DEFAULT_REMOTE_USER = "default-user"
 
 
 class Conversation:
-    def __init__(self, client: EverOSClient) -> None:
+    """One conversation: one EverOS session holding everything it stored —
+    memories and recorded trajectories alike — so forget_session can delete
+    it all with one session-scoped delete.
+
+    `ephemeral` marks an HTTP caller that sends no MCP session id: nothing
+    ties its calls together, so it gets no background work (a later call
+    could never report the outcome) and nothing to forget.
+    """
+
+    def __init__(self, client: EverOSClient, *, ephemeral: bool = False) -> None:
         self.client = client
         self.session_id = client.settings.session_id
+        self.ephemeral = ephemeral
         # Outcome notes of background saves that finished badly; they ride
         # along on the next tool result so a failure is never silent.
         self.notices: list[str] = []
-        # Sessions created by record_trajectory, for forget_session.
-        self.trajectory_sessions: list[str] = []
         self._pending: set[asyncio.Task[None]] = set()
-        # Serializes add -> flush on the conversation session so two
-        # concurrent saves cannot steal each other's flush. Trajectories get a
-        # session of their own and need no lock.
+        # Serializes add -> flush on the session. Every store ends with the
+        # buffer extracted, so a trajectory never mixes with earlier messages
+        # and each store is extracted as its own unit.
         self._lock = asyncio.Lock()
         self.last_used = time.monotonic()
 
@@ -81,8 +90,6 @@ class Conversation:
     async def store(self, messages: list[dict[str, Any]], session_id: str) -> str | None:
         """Write messages, then make sure extraction ran.
         Returns the final status; "extracted" means searchable."""
-        if session_id != self.session_id:
-            return await self._add_and_flush(messages, session_id)
         async with self._lock:
             return await self._add_and_flush(messages, session_id)
 
@@ -136,12 +143,16 @@ class ConversationRegistry:
         if not mcp_session:
             # Stateless client: nothing ties its calls together, so each call
             # is its own conversation.
-            return self._new(api_key, user_id)
+            return self._new(api_key, user_id, f"mcp-{user_id}-{uuid.uuid4().hex[:12]}", True)
         key = (hashlib.sha256(api_key.encode()).hexdigest(), user_id, mcp_session)
         conv = self._items.get(key)
         if conv is None:
             self._evict()
-            conv = self._items[key] = self._new(api_key, user_id)
+            # Derived, not random: a conversation evicted while idle comes
+            # back on the same EverOS session, so forget_session still
+            # reaches everything the MCP session stored.
+            digest = hashlib.sha256("|".join(key).encode()).hexdigest()[:12]
+            conv = self._items[key] = self._new(api_key, user_id, f"mcp-{user_id}-{digest}")
         conv.last_used = time.monotonic()
         return conv
 
@@ -163,9 +174,13 @@ class ConversationRegistry:
             )
         return api_key, user_id
 
-    def _new(self, api_key: str, user_id: str) -> Conversation:
-        settings = Settings.remote(api_key=api_key, user_id=user_id, base_url=self.base_url)
-        return Conversation(EverOSClient(settings, http=self._http))
+    def _new(
+        self, api_key: str, user_id: str, session_id: str, ephemeral: bool = False
+    ) -> Conversation:
+        settings = Settings.remote(
+            api_key=api_key, user_id=user_id, base_url=self.base_url, session_id=session_id
+        )
+        return Conversation(EverOSClient(settings, http=self._http), ephemeral=ephemeral)
 
     def _evict(self) -> None:
         now = time.monotonic()

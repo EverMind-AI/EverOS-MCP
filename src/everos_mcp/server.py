@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import sys
-import uuid
 from typing import Any, Literal
 
 import anyio
@@ -215,7 +214,9 @@ async def add_memory(
             }
         )
 
-    if wait:
+    # An ephemeral (session-less) caller has no later call to hear about a
+    # background failure on, so it always waits.
+    if wait or conv.ephemeral:
         status = await conv.store(messages, s.session_id)
         if status == "extracted":
             return conv.reply("Stored and extracted; the memory is now searchable.")
@@ -270,22 +271,30 @@ async def list_memories(
 
 
 @mcp.tool(title="Forget this conversation", annotations=_DESTRUCTIVE)
-async def forget_session(include_trajectories: bool = True, ctx: Context | None = None) -> str:
+async def forget_session(ctx: Context | None = None) -> str:
     """Delete what was stored through this connection: the memories extracted
-    from this conversation and, unless include_trajectories=false, the cases
-    distilled from trajectories recorded in it. The long-term user profile and
-    learned skills (generalized across many tasks) are kept.
+    from this conversation and the cases distilled from trajectories recorded
+    in it. The long-term user profile and learned skills (generalized across
+    many tasks) are kept.
 
     Call this ONLY when the user explicitly asks to forget or delete what was
     said in this conversation. It cannot be undone.
     """
     conv = _conversation(ctx)
+    if conv.ephemeral:
+        return conv.reply(
+            "Nothing to forget: this client does not keep an MCP session, so its "
+            "calls are not tied into one conversation. Nothing was deleted."
+        )
     await conv.drain()  # do not let a queued save land after the delete
-    client = conv.client
     try:
-        deleted = (await client.delete_session(conv.session_id)).get("count", 0)
+        # Session-scoped, without an owner: covers the user's memories and
+        # the agent cases distilled from this session's trajectories.
+        result = await conv.client.delete_session(conv.session_id, owner=False)
     except EverOSError as exc:
-        if exc.code not in ("404", "405", "not_found"):
+        # A bare HTTP 404/405 (no error envelope) means the route itself is
+        # missing; an enveloped not-found is a real answer from a real route.
+        if exc.code not in ("404", "405"):
             raise
         # Self-hosted EverOS has no delete endpoint yet; memories live as
         # Markdown files on that server.
@@ -294,13 +303,8 @@ async def forget_session(include_trajectories: bool = True, ctx: Context | None 
             "the API (self-hosted servers keep them as Markdown files under "
             "~/.everos/ on the server — remove them there). Nothing was deleted."
         )
-    if include_trajectories:
-        for session_id in list(conv.trajectory_sessions):
-            result = await client.delete_session(session_id, owner=False)
-            deleted += result.get("count", 0)
-            conv.trajectory_sessions.remove(session_id)
     return conv.reply(
-        f"Deleted {deleted} stored item(s) from this conversation. The user "
+        f"Deleted {result.get('count', 0)} stored item(s) from this conversation. The user "
         "profile and learned skills are unchanged; memories from earlier "
         "conversations are untouched."
     )
@@ -380,12 +384,13 @@ async def record_trajectory(messages: list[dict[str, Any]], ctx: Context | None 
                 return conv.reply(f"Error: tool message {i} is missing tool_call_id.")
             item["tool_call_id"] = m["tool_call_id"]
         wire.append(item)
-    # Its own session: buffered personal messages never mix into the
-    # trajectory, and each recording is extracted as exactly one unit.
-    session_id = f"traj-{uuid.uuid4().hex[:16]}"
-    conv.trajectory_sessions.append(session_id)
+    # The conversation's own session: every store ends fully extracted, so
+    # the trajectory is extracted as one unit, and forget_session reaches it.
+    if conv.ephemeral:
+        await conv.store_in_background(wire, conv.session_id, label="record_trajectory")
+        return conv.reply("Trajectory recorded. Distilled cases become available within minutes.")
     conv.spawn(
-        conv.store_in_background(wire, session_id, label="record_trajectory"),
+        conv.store_in_background(wire, conv.session_id, label="record_trajectory"),
         "record_trajectory",
     )
     return conv.reply(
@@ -522,8 +527,12 @@ def http_app(
         )
     if authorization_server and not public_url:
         raise ConfigError("EVEROS_MCP_PUBLIC_URL is required with an authorization server")
-    if introspector is not None and not authorization_server:
-        raise ConfigError("token introspection needs EVEROS_MCP_AUTHORIZATION_SERVER")
+    if bool(introspector) != bool(authorization_server):
+        # Advertising OAuth without verifying its tokens would forward them
+        # upstream as API keys — the passthrough the MCP spec forbids.
+        raise ConfigError(
+            "OAuth mode needs both EVEROS_MCP_AUTHORIZATION_SERVER and EVEROS_MCP_INTROSPECTION_URL"
+        )
     metadata = None
     if authorization_server:
         metadata = {
