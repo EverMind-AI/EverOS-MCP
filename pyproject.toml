@@ -22,7 +22,7 @@ classifiers = [
 [project.urls]
 Homepage = "https://evermind.ai"
 Documentation = "https://docs.evermind.ai"
-Repository = "https://github.com/EverMind-AI/everos-mcp"
+Repository = "https://github.com/EverMind-AI/EverOS-MCP"
 
 [project.scripts]
 everos-mcp = "everos_mcp.server:main"
