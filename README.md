@@ -39,7 +39,7 @@ claude mcp add everos -e EVEROS_API_KEY=sk-... -- uvx everos-mcp
 | `add_memory` | Store a durable fact or exchange; saves in the background by default (`wait=true` to block until it is searchable) |
 | `get_profile` | The synthesized user profile (facts, traits, preferences) |
 | `list_memories` | Chronological, paginated browsing |
-| `forget_session` | Delete what this connection stored (memories + trajectories); the profile is kept |
+| `forget_session` | Delete what this connection stored (memories + cases distilled from its trajectories); the profile and learned skills are kept |
 | `record_trajectory` | Record how a task was solved (incl. tool calls) for future reuse |
 | `recall_agent_experience` | Search distilled cases/skills relevant to the task at hand |
 
