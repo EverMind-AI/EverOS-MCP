@@ -56,6 +56,9 @@ class Conversation:
         # and each store is extracted as its own unit.
         self._lock = asyncio.Lock()
         self.last_used = time.monotonic()
+        # When record_trajectory last ran: cases are distilled from it after
+        # extraction, so a delete soon after can miss one still in progress.
+        self.last_trajectory_at: float | None = None
 
     @property
     def settings(self) -> Settings:
@@ -63,7 +66,8 @@ class Conversation:
 
     @property
     def busy(self) -> bool:
-        return bool(self._pending)
+        # A foreground store or a delete holds the lock without a task.
+        return bool(self._pending) or self._lock.locked()
 
     @property
     def saturated(self) -> bool:

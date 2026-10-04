@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import time
 from typing import Any, Literal
 
 import anyio
@@ -16,7 +17,7 @@ from mcp.types import ToolAnnotations
 from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .client import EverOSClient, EverOSError, now_ms
 from .config import ConfigError, Settings, base_url_from_env
@@ -320,17 +321,24 @@ async def forget_session(ctx: Context | None = None) -> str:
             "~/.everos/ on the server — remove them there). Nothing was deleted."
         )
     count = result.get("count", 0)
+    pending_cases = ""
+    if conv.last_trajectory_at is not None and time.monotonic() - conv.last_trajectory_at < 600:
+        pending_cases = (
+            " A trajectory recorded in the last few minutes may still be distilling "
+            "into a case that appears after this delete; call forget_session again "
+            "in a few minutes to remove it."
+        )
     if conv.settings.session_pinned:
         return conv.reply(
             f"Deleted {count} stored item(s) under the fixed session "
             f"{conv.session_id!r} (EVEROS_SESSION_ID). That includes anything earlier "
             "runs stored under the same id. The user profile and learned skills are "
-            "unchanged."
+            "unchanged." + pending_cases
         )
     return conv.reply(
         f"Deleted {count} stored item(s) saved through this connection. The user "
         "profile and learned skills are unchanged; memories from earlier "
-        "connections are untouched."
+        "connections are untouched." + pending_cases
     )
 
 
@@ -416,6 +424,7 @@ async def record_trajectory(messages: list[dict[str, Any]], ctx: Context | None 
         wire.append(item)
     # The conversation's own session: every store ends fully extracted, so
     # the trajectory is extracted as one unit, and forget_session reaches it.
+    conv.last_trajectory_at = time.monotonic()
     if conv.ephemeral or conv.saturated:
         await conv.store_in_background(wire, conv.session_id, label="record_trajectory")
         return conv.reply("Trajectory recorded. Distilled cases become available within minutes.")
@@ -583,6 +592,35 @@ def http_app(
     )
 
 
+async def _read_capped(receive: Receive) -> bytes | None:
+    """Read a whole request body, or None once it passes MAX_BODY_BYTES."""
+    body = bytearray()
+    while True:
+        message = await receive()
+        if message["type"] != "http.request":
+            return bytes(body)  # disconnected; the app sees an empty body
+        body += message.get("body", b"")
+        if len(body) > MAX_BODY_BYTES:
+            return None
+        if not message.get("more_body", False):
+            return bytes(body)
+
+
+def _replay(body: bytes, receive: Receive) -> Receive:
+    """Hand an already-read body to the app, then defer to the real stream
+    (for the disconnect message)."""
+    sent = False
+
+    async def replay() -> Message:
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return await receive()
+
+    return replay
+
+
 _PRM_PATH = "/.well-known/oauth-protected-resource"
 # Request-scope key under which a verified OAuth identity reaches the tools.
 _IDENTITY = "everos_identity"
@@ -645,6 +683,17 @@ class _RequireBearer:
                     status_code=413,
                 )(scope, receive, send)
                 return
+            if not length.isdigit() and scope["method"] in ("POST", "PUT", "PATCH"):
+                # Chunked body: no length to check up front, so read it here,
+                # at most MAX_BODY_BYTES, and replay it to the app.
+                body = await _read_capped(receive)
+                if body is None:
+                    await JSONResponse(
+                        {"error": "payload_too_large", "message": "request body is too large"},
+                        status_code=413,
+                    )(scope, receive, send)
+                    return
+                receive = _replay(body, receive)
             auth = headers.get("authorization", "")
             scheme, _, token = auth.partition(" ")
             token = token.strip()

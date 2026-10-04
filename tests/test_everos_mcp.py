@@ -913,3 +913,71 @@ def test_dot_ids_are_refused():
     from everos_mcp.config import valid_id
 
     assert not valid_id(".") and not valid_id("..") and valid_id("a.b")
+
+
+# -- fourth review ------------------------------------------------------------------
+
+
+def test_guard_passes_dev_urls_with_at_in_the_path():
+    for text in ("http://localhost:5173/@vite/client", "https://host:8443/users/@me"):
+        assert find_secret(text) is None, text
+    assert find_secret("postgres://admin:hunter2secret@db.internal/prod") is not None
+
+
+def test_conversation_holding_the_lock_counts_as_busy():
+    reg, _ = make_registry()
+    conv = reg.resolve(hdrs())
+
+    async def scenario():
+        async with conv._lock:
+            return conv.busy
+
+    assert run(scenario()) is True and conv.busy is False
+
+
+def test_forget_soon_after_a_trajectory_warns_about_late_cases(tool_client):
+    tool_client(routes={"add": {"data": {"status": "extracted"}}, "delete": {"data": {"count": 1}}})
+
+    async def scenario():
+        await server.record_trajectory([{"role": "user", "content": "task"}])
+        return await server.forget_session()
+
+    assert "call forget_session again" in run(scenario())
+
+
+def test_forget_without_recent_trajectory_has_no_warning(tool_client):
+    tool_client(routes={"delete": {"data": {"count": 1}}})
+    assert "again" not in run(server.forget_session())
+
+
+def test_chunked_bodies_are_capped_and_replayed(monkeypatch):
+    reg, _ = make_registry()
+    monkeypatch.setattr(server, "_registry", None)
+    app = server.http_app(reg)
+
+    async def chunks(total):  # an async generator: sent chunked, no Content-Length
+        for _ in range(total // (512 * 1024)):
+            yield b"x" * (512 * 1024)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
+            big = await c.post(
+                "/mcp", content=chunks(6 * 1024 * 1024), headers={"Authorization": "Bearer k"}
+            )
+        return big
+
+    assert run(scenario()).status_code == 413
+
+
+def test_replay_hands_the_body_over_once():
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def scenario():
+        r = server._replay(b"abc", receive)
+        return await r(), await r()
+
+    first, second = run(scenario())
+    assert first == {"type": "http.request", "body": b"abc", "more_body": False}
+    assert second["type"] == "http.disconnect"

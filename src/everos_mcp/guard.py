@@ -27,7 +27,9 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("bearer token", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{20,}")),
     (
         "URL with embedded password",
-        re.compile(r"\b[a-z][a-z0-9+.-]*://[^/\s:@]{1,64}:[^@\s]{1,256}@"),
+        # user:password@ sits before the first "/", "?" or "#", so a port
+        # followed by a path containing "@" (`localhost:5173/@vite`) passes.
+        re.compile(r"\b[a-z][a-z0-9+.-]*://[^/?#\s:@]{1,64}:[^/?#@\s]{1,256}@"),
     ),
     # `password=hunter2x`, `AWS_SECRET_ACCESS_KEY: "..."`, `"api_key": "..."`.
     # The key must END in the secret word, so references to a secret pass
