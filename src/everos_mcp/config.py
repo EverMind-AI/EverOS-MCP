@@ -6,7 +6,6 @@ LLM should never choose whose memory it is reading or writing.
 
 from __future__ import annotations
 
-import getpass
 import os
 import re
 import uuid
@@ -22,14 +21,9 @@ PROD_BASE_URL = "https://api.evermind.ai"
 MAX_USER_ID = 100
 _ID_RE = re.compile(rf"[A-Za-z0-9_.@+-]{{1,{MAX_USER_ID}}}")
 
-
-def default_user_id() -> str:
-    try:
-        name = getpass.getuser()
-    except (KeyError, OSError):  # no passwd entry / no login name (containers)
-        name = ""
-    name = re.sub(r"[^A-Za-z0-9_.@+-]", "-", name).strip("-")[:MAX_USER_ID]
-    return name or "default-user"
+# Owner of the memories when no user id is configured: one memory per API key,
+# the same on every machine (as in EverOS's Claude Code plugin).
+DEFAULT_USER_ID = "default-user"
 
 
 class ConfigError(Exception):
@@ -45,6 +39,9 @@ class Settings:
     project_id: str
     session_id: str
     assistant_sender_id: str
+    # True when EVEROS_SESSION_ID fixed the session, so it may hold what
+    # earlier runs stored under the same id.
+    session_pinned: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -66,9 +63,10 @@ class Settings:
                 f"EVEROS_USER_ID {user_id!r} must be at most {MAX_USER_ID} letters, "
                 "digits and the characters _ . @ + -"
             )
-        # Optional: default to the OS account so a cloud user only has to set
-        # the API key. Set it explicitly to share one memory across machines.
-        user_id = user_id or default_user_id()
+        # Optional: a cloud user only has to set the API key. Set it to keep
+        # several people's memories apart under one key.
+        user_id = user_id or DEFAULT_USER_ID
+        pinned_session = os.environ.get("EVEROS_SESSION_ID", "").strip()
         return cls(
             api_key=api_key,
             base_url=base_url,
@@ -78,8 +76,8 @@ class Settings:
             # One session per server process (≈ one client connection): two
             # clients never share a buffer, and forget_session has a bounded
             # blast radius.
-            session_id=os.environ.get("EVEROS_SESSION_ID", "").strip()
-            or f"mcp-{user_id}-{uuid.uuid4().hex[:12]}",
+            session_id=pinned_session or f"mcp-{user_id}-{uuid.uuid4().hex[:12]}",
+            session_pinned=bool(pinned_session),
             # Per-user by default so one user's trajectories (and the data in
             # them) never surface in another user's recall. Set it to a shared
             # value explicitly to pool agent experience across a team.

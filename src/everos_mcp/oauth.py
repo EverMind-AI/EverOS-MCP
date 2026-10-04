@@ -34,6 +34,7 @@ from .config import valid_id
 # How long an introspection answer is trusted before asking again; bounds
 # how late a revocation takes effect.
 CACHE_SECONDS = 300
+NEGATIVE_CACHE_SECONDS = 60
 _MAX_CACHE = 10_000
 
 
@@ -76,13 +77,16 @@ class Introspector:
             headers={"Authorization": f"Bearer {secret}"} if secret else {},
             transport=transport,
         )
-        self._cache: dict[str, tuple[float, Identity]] = {}
+        # digest -> (valid until, identity); None marks a known-bad token.
+        self._cache: dict[str, tuple[float, Identity | None]] = {}
 
     async def identify(self, token: str) -> Identity:
         digest = hashlib.sha256(token.encode()).hexdigest()
         now = time.time()
         hit = self._cache.get(digest)
         if hit is not None and hit[0] > now:
+            if hit[1] is None:
+                raise InvalidToken("token is not active")
             return hit[1]
 
         try:
@@ -99,11 +103,15 @@ class Introspector:
             raise IntrospectionUnavailable("introspection answered non-JSON") from exc
 
         if not isinstance(body, dict) or body.get("active") is not True:
+            # Remembered briefly, so a flood of bogus tokens does not turn
+            # into a flood of introspection calls.
+            self._remember(digest, now + NEGATIVE_CACHE_SECONDS, None, now)
             raise InvalidToken("token is not active")
         aud = body.get("aud")
         audiences = aud if isinstance(aud, list) else [aud]
         if self.resource not in audiences:
             # A token minted for some other resource must not be honoured here.
+            self._remember(digest, now + NEGATIVE_CACHE_SECONDS, None, now)
             raise InvalidToken("token was not issued for this server")
         api_key = body.get("everos_api_key")
         if not isinstance(api_key, str) or not api_key:
@@ -121,7 +129,7 @@ class Introspector:
         self._remember(digest, until, identity, now)
         return identity
 
-    def _remember(self, digest: str, until: float, identity: Identity, now: float) -> None:
+    def _remember(self, digest: str, until: float, identity: Identity | None, now: float) -> None:
         if len(self._cache) >= _MAX_CACHE:
             self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
             if len(self._cache) >= _MAX_CACHE:

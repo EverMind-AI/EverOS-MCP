@@ -20,13 +20,17 @@ from typing import Any
 import httpx
 
 from .client import EverOSClient, EverOSError, make_http
-from .config import Settings, valid_id
+from .config import DEFAULT_USER_ID, Settings, valid_id
 from .oauth import Identity
 
 log = logging.getLogger("everos_mcp")
 
 USER_HEADER = "x-everos-user-id"
-DEFAULT_REMOTE_USER = "default-user"
+# Bounds per conversation, so one caller cannot pile up unbounded work: past
+# MAX_PENDING background saves, further saves run in the foreground; only the
+# latest MAX_NOTICES failure notes are kept.
+MAX_PENDING = 16
+MAX_NOTICES = 20
 
 
 class Conversation:
@@ -61,15 +65,23 @@ class Conversation:
     def busy(self) -> bool:
         return bool(self._pending)
 
+    @property
+    def saturated(self) -> bool:
+        return len(self._pending) >= MAX_PENDING
+
+    def note(self, text: str) -> None:
+        self.notices.append(text)
+        del self.notices[:-MAX_NOTICES]
+
     def spawn(self, coro: Awaitable[None], label: str) -> None:
         async def run() -> None:
             try:
                 await coro
             except EverOSError as exc:
-                self.notices.append(f"background {label} failed: {exc}")
+                self.note(f"background {label} failed: {exc}")
             except Exception as exc:  # never let a background task die silently
                 log.exception("background %s crashed", label)
-                self.notices.append(f"background {label} failed unexpectedly: {exc!r}")
+                self.note(f"background {label} failed unexpectedly: {exc!r}")
 
         task = asyncio.ensure_future(run())
         self._pending.add(task)
@@ -105,9 +117,19 @@ class Conversation:
     ) -> None:
         status = await self.store(messages, session_id)
         if status != "extracted":
-            self.notices.append(
+            self.note(
                 f"{label}: stored, but extraction returned {status!r}; it is not searchable yet"
             )
+
+    async def delete_all(self) -> dict[str, Any]:
+        """Delete everything this conversation's session holds. Background
+        saves are drained first, and the delete holds the save lock, so a
+        save running in the foreground cannot land after it."""
+        await self.drain()
+        async with self._lock:
+            # Session-scoped, without an owner: covers the user's memories and
+            # the agent cases distilled from this session's trajectories.
+            return await self.client.delete_session(self.session_id, owner=False)
 
 
 class ConversationRegistry:
@@ -166,7 +188,7 @@ class ConversationRegistry:
                 "unauthorized",
                 "missing API key: send 'Authorization: Bearer <EverOS API key>'",
             )
-        user_id = headers.get(USER_HEADER, "").strip() or DEFAULT_REMOTE_USER
+        user_id = headers.get(USER_HEADER, "").strip() or DEFAULT_USER_ID
         if not valid_id(user_id):
             raise EverOSError(
                 "invalid_argument",

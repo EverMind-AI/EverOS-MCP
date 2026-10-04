@@ -193,13 +193,13 @@ def test_config_defaults_isolate_sessions_and_agents(monkeypatch):
     assert a.assistant_sender_id == "assistant-alice"
 
 
-def test_config_user_id_defaults_to_os_account(monkeypatch):
+def test_config_user_id_defaults_to_a_constant(monkeypatch):
+    # One memory per key, the same on every machine and in every container.
     monkeypatch.setenv("EVEROS_API_KEY", "k")
     monkeypatch.delenv("EVEROS_USER_ID", raising=False)
     monkeypatch.delenv("EVEROS_BASE_URL", raising=False)
-    monkeypatch.setattr("getpass.getuser", lambda: "Dani Zhu")
     s = Settings.from_env()
-    assert s.user_id == "Dani-Zhu" and s.assistant_sender_id == "assistant-Dani-Zhu"
+    assert s.user_id == "default-user" and s.assistant_sender_id == "assistant-default-user"
 
 
 def test_config_rejects_unsafe_user_id(monkeypatch):
@@ -774,3 +774,118 @@ def test_eviction_never_drops_a_conversation_with_saves_in_flight():
     busy._pending.add(object())  # stands in for a running save
     reg.resolve(hdrs(session="s2"))
     assert reg.resolve(hdrs(session="s1")) is busy
+
+
+# -- third review ------------------------------------------------------------------
+
+
+def test_forget_waits_for_a_foreground_save(monkeypatch):
+    order: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        ep = request.url.path.rsplit("/", 1)[-1]
+        if ep == "add":
+            await asyncio.sleep(0.05)
+        order.append(ep)
+        return httpx.Response(200, json={"data": {"status": "accumulated", "count": 1}})
+
+    client = EverOSClient(SETTINGS, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(server, "_local", Conversation(client))
+
+    async def scenario():
+        save = asyncio.ensure_future(server.add_memory(user_message="x", wait=True))
+        await asyncio.sleep(0.01)  # the save holds the lock, mid-add
+        await server.forget_session()
+        await save
+
+    run(scenario())
+    assert order == ["add", "flush", "delete"]
+
+
+def test_forget_with_pinned_session_says_so(tool_client, monkeypatch):
+    tool_client(routes={"delete": {"data": {"count": 7}}})
+    import dataclasses
+
+    conv = server._local
+    conv.client.settings = dataclasses.replace(conv.settings, session_pinned=True)
+    reply = run(server.forget_session())
+    assert "fixed session" in reply and "earlier runs" in reply
+
+
+def test_record_trajectory_respects_the_api_message_limit(tool_client):
+    seen = tool_client()
+    msgs = [{"role": "user", "content": "x"}] * 501
+    reply = run(server.record_trajectory(msgs))
+    assert "at most 500" in reply and seen == []
+
+
+def test_saturated_conversation_saves_in_the_foreground(tool_client):
+    tool_client(routes={"add": {"data": {"status": "extracted"}}})
+    conv = server._local
+    for _ in range(16):
+        conv._pending.add(object())  # stand-ins for running saves
+    reply = run(server.add_memory(user_message="x"))
+    assert "now searchable" in reply
+
+
+def test_notices_are_capped():
+    reg, _ = make_registry()
+    conv = reg.resolve(hdrs())
+    for i in range(50):
+        conv.note(f"n{i}")
+    assert len(conv.notices) == 20 and conv.notices[-1] == "n49"
+
+
+def test_recalled_data_is_fenced_and_notes_stay_outside(tool_client):
+    tool_client(routes={"search": {"data": {"episodes": [{"episode": "likes tea"}]}}})
+    server._local.note("background add_memory failed: boom")
+    reply = run(server.search_memory("tea"))
+    end = reply.index("--- END STORED MEMORY ---")
+    assert reply.index("--- BEGIN STORED MEMORY") < reply.index("likes tea") < end
+    assert reply.index("boom") > end
+
+
+def test_profile_is_compact_json(tool_client):
+    tool_client(routes={"get": {"data": {"profiles": [{"profile_data": {"a": 1, "b": [2]}}]}}})
+    assert '{"a":1,"b":[2]}' in run(server.get_profile())
+
+
+def test_http_app_rejects_oversized_bodies(monkeypatch):
+    reg, _ = make_registry()
+    monkeypatch.setattr(server, "_registry", None)
+    app = server.http_app(reg)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
+            return await c.post(
+                "/mcp",
+                content=b"x" * (server.MAX_BODY_BYTES + 1),
+                headers={"Authorization": "Bearer k"},
+            )
+
+    assert run(scenario()).status_code == 413
+
+
+def test_invalid_tokens_are_negatively_cached():
+    intro, seen = make_introspector({"active": False})
+
+    async def scenario():
+        for _ in range(3):
+            with pytest.raises(InvalidToken):
+                await intro.identify("bogus")
+
+    run(scenario())
+    assert len(seen) == 1
+
+
+def test_guard_lets_secret_references_through():
+    for text in ("SecretId: prod/db-creds-2", "secret_name=deploy-key-v2", "sk-loading-spinner"):
+        assert find_secret(text) is None, text
+    assert find_secret_in([{"SecretId": "prod/db-creds-2"}]) is None
+    assert find_secret("SECRET_KEY=abc123def456ghi") is not None
+
+
+def test_guard_refusal_echoes_no_part_of_the_secret():
+    finding = find_secret("my key is sk-proj-abc123DEF456ghi789jkl")
+    assert finding == "API key"

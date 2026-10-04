@@ -63,10 +63,10 @@ without a permission prompt; `forget_session` is marked destructive.
 | Env var | Required | Default | Meaning |
 |---|---|---|---|
 | `EVEROS_API_KEY` | yes (cloud) | — | API key; issued per environment |
-| `EVEROS_USER_ID` | no | your OS user name | Id owning the memories. Set the same value on every machine to share one memory; up to 100 letters, digits and `_ . @ + -` |
+| `EVEROS_USER_ID` | no | `default-user` | Id owning the memories: one memory per API key by default, the same on every machine. Set it to keep several people apart under one key; up to 100 letters, digits and `_ . @ + -` |
 | `EVEROS_BASE_URL` | no | `https://api.evermind.ai` | API endpoint; point at your own deployment for self-hosted EverOS |
 | `EVEROS_APP_ID` / `EVEROS_PROJECT_ID` | no | `default` | Business scope |
-| `EVEROS_SESSION_ID` | no | `mcp-<user_id>-<random>` | Conversation buffer key; a fresh one per server process, so two clients never share a buffer |
+| `EVEROS_SESSION_ID` | no | `mcp-<user_id>-<random>` | Session everything is stored under; a fresh one per server process. Setting a fixed value makes `forget_session` delete everything ever stored under it, by any run |
 | `EVEROS_ASSISTANT_SENDER_ID` | no | `assistant-<user_id>` | Agent identity for trajectories and recalled experience. Per user by default; set the same value for everyone to pool agent experience across a team (their trajectories then become visible to each other) |
 
 ## Self-hosted / open-source EverOS
@@ -104,7 +104,7 @@ claude mcp add --transport http everos https://mcp.example.com/mcp \
 | `EVEROS_MCP_ALLOWED_HOSTS` | — | Comma-separated public host names to accept (DNS-rebinding protection) |
 | `EVEROS_MCP_PUBLIC_URL` | — | Public base URL of this server, e.g. `https://mcp.example.com` |
 | `EVEROS_MCP_AUTHORIZATION_SERVER` | — | OAuth issuer that signs users in. When set, the server publishes RFC 9728 metadata at `/.well-known/oauth-protected-resource/mcp` and points to it from the 401 challenge |
-| `EVEROS_MCP_INTROSPECTION_URL` / `EVEROS_MCP_INTROSPECTION_SECRET` | — | OAuth mode: bearer tokens are verified at this RFC 7662 endpoint (audience must be this server) and exchanged for the EverOS API key the user granted. The token itself is never forwarded upstream, as the MCP authorization spec requires. Contract: `src/everos_mcp/oauth.py` |
+| `EVEROS_MCP_INTROSPECTION_URL` / `EVEROS_MCP_INTROSPECTION_SECRET` | — | OAuth mode (both required, together with the authorization server): bearer tokens are verified at this RFC 7662 endpoint (audience must be this server) and exchanged for the EverOS API key the user granted. The token itself is never forwarded upstream, as the MCP authorization spec requires. Contract: `src/everos_mcp/oauth.py` |
 
 Deployment notes:
 
@@ -112,6 +112,9 @@ Deployment notes:
 - Each MCP session lives in the memory of the replica that created it. With
   more than one replica, route by the `Mcp-Session-Id` header (sticky
   sessions).
+- An API key is the trust boundary: anyone holding a key can read and write
+  every user id within that key's space (`X-EverOS-User-Id` is chosen by the
+  caller). Give separate people separate keys when that matters.
 - Conversations are isolated by (API key, user, MCP session): one caller never
   sees another's session, background-save notes, or trajectories.
 - Hosts that only connect through OAuth (claude.ai connectors, ChatGPT) need an

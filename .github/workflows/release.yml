@@ -27,8 +27,8 @@ jobs:
       id-token: write # OIDC token for PyPI Trusted Publishing
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           python-version: "3.12"
 
@@ -45,7 +45,7 @@ jobs:
           fi
 
       - name: Test
-        run: uv sync --dev && uv run ruff check . && uv run pytest -q
+        run: uv sync --dev --locked && uv run ruff check . && uv run pytest -q
 
       - name: Build
         run: uv build --out-dir dist
@@ -59,7 +59,7 @@ jobs:
             python -c "import everos_mcp.server, everos_mcp.oauth"
 
       - name: Publish to PyPI (Trusted Publishing)
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
   # Separate job so the publish job keeps `contents: read` next to its OIDC
   # token. Left as a draft: a human reads the notes, then clicks Publish.

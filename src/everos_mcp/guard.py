@@ -14,7 +14,9 @@ from collections.abc import Iterator
 from typing import Any
 
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("API key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}")),
+    # Real keys always carry digits; this keeps kebab-case names such as
+    # `sk-loading-spinner-wrapper` out.
+    ("API key", re.compile(r"\bsk-(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{16,}")),
     ("Stripe key", re.compile(r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}")),
     ("AWS access key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})")),
@@ -28,13 +30,16 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(r"\b[a-z][a-z0-9+.-]*://[^/\s:@]{1,64}:[^@\s]{1,256}@"),
     ),
     # `password=hunter2x`, `AWS_SECRET_ACCESS_KEY: "..."`, `"api_key": "..."`.
-    # The value must mix letters and digits, so prose ("password: the one in
+    # The key must END in the secret word, so references to a secret pass
+    # (`SecretId`, `secret_name`, `password_policy`) — storing such a
+    # reference is exactly what the refusal message recommends. The value
+    # must mix letters and digits, so prose ("password: the one in
     # 1Password") and env references (`$DB_PASSWORD`, `${TOKEN}`) pass.
     (
         "secret assignment",
         re.compile(
-            r"(?i)\b[a-z0-9_]*(?:password|passwd|secret|api_?key|access_?key"
-            r"|(?:access|auth|refresh|session)_?token)[a-z0-9_]*[\"']?\s*[:=]\s*[\"']?"
+            r"(?i)\b[a-z0-9_]*(?:password|passwd|secret|(?:api|access|secret|private)_?key"
+            r"|token)[\"']?\s*[:=]\s*[\"']?"
             r"(?=[^\s\"'$]*\d)(?=[^\s\"'$]*[A-Za-z])[^\s\"'${}<>]{8,}"
         ),
     ),
@@ -42,13 +47,11 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 
 
 def find_secret(text: str, patterns: list[tuple[str, re.Pattern[str]]] = _PATTERNS) -> str | None:
-    """Return a human-readable finding like 'API key (sk-proj…Q4x)', or None."""
+    """Return the kind of credential found, like 'API key', or None. The
+    finding names the kind only: no part of the secret is echoed back."""
     for kind, pattern in patterns:
-        m = pattern.search(text)
-        if m:
-            token = m.group(0)
-            masked = token[:7] + "…" + token[-3:] if len(token) > 13 else token[:4] + "…"
-            return f"{kind} ({masked})"
+        if pattern.search(text):
+            return kind
     return None
 
 
