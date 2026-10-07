@@ -1,0 +1,84 @@
+# Publishes to PyPI via Trusted Publishing (OIDC) — no stored token — then
+# drafts the matching GitHub Release. Fires on a version tag (vX.Y.Z, plus PEP
+# 440 pre-releases such as vX.Y.Zrc1). The `release` environment gates the
+# upload behind manual approval: Settings → Environments → release → required
+# reviewers.
+#
+# One-time setup on PyPI (account owner, cannot be done from CI):
+#   pypi.org → Your account → Publishing → add a pending publisher:
+#   project=everos-mcp, owner=EverMind-AI, repo=EverOS-MCP,
+#   workflow=release.yml, environment=release.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: build + publish to PyPI
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write # OIDC token for PyPI Trusted Publishing
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: "3.12"
+
+      # The tag must match the package version, so a mistyped tag can't
+      # publish the wrong release.
+      - name: Verify tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(grep -m1 -E '^version = ' pyproject.toml | sed -E 's/^version = "(.+)"/\1/')"
+          mod="$(sed -nE 's/^__version__ = "(.+)"/\1/p' src/everos_mcp/__init__.py)"
+          if [ "$tag" != "$pkg" ] || [ "$tag" != "$mod" ]; then
+            echo "::error::tag v$tag, pyproject $pkg and __version__ $mod must all match"
+            exit 1
+          fi
+
+      - name: Test
+        run: uv sync --dev --locked && uv run ruff check . && uv run pytest -q
+
+      - name: Build
+        run: uv build --out-dir dist
+
+      # Install the built wheel into a clean environment and start it: catches
+      # a package that builds but is missing a module or an entry point.
+      - name: Smoke-test the wheel
+        run: |
+          uv run --isolated --no-project --with dist/*.whl everos-mcp --help
+          uv run --isolated --no-project --with dist/*.whl \
+            python -c "import everos_mcp.server, everos_mcp.oauth"
+
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  # Separate job so the publish job keeps `contents: read` next to its OIDC
+  # token. Left as a draft: a human reads the notes, then clicks Publish.
+  github-release:
+    name: draft the GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags="--latest"
+          if ! echo "${TAG#v}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            flags="--prerelease --latest=false"
+          fi
+          # $flags is deliberately unquoted — it can carry two words.
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft $flags \
+            --title "everos-mcp ${TAG#v}" --generate-notes
