@@ -10,12 +10,18 @@ dependencies = [
     "mcp>=1.14.0,<2",  # floor tested in CI; 1.7-1.13 cannot register these tools
     "httpx>=0.27.0,<1",
 ]
-keywords = ["mcp", "memory", "ai-agents", "everos", "evermind"]
+keywords = ["mcp", "model-context-protocol", "memory", "long-term-memory", "ai-agents", "claude", "everos", "evermind"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries",
 ]
 
@@ -23,6 +29,8 @@ classifiers = [
 Homepage = "https://evermind.ai"
 Documentation = "https://docs.evermind.ai"
 Repository = "https://github.com/EverMind-AI/EverOS-MCP"
+Issues = "https://github.com/EverMind-AI/EverOS-MCP/issues"
+Console = "https://everos.evermind.ai"
 
 [project.scripts]
 everos-mcp = "everos_mcp.server:main"
