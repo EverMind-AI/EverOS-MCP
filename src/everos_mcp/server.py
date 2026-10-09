@@ -19,6 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from . import __version__
 from .client import EverOSClient, EverOSError, now_ms
 from .config import ConfigError, Settings, base_url_from_env
 from .conversation import Conversation, ConversationRegistry
@@ -88,6 +89,9 @@ _local: Conversation | None = None
 _registry: ConversationRegistry | None = None
 
 mcp = FastMCP(name="everos", instructions=INSTRUCTIONS)
+# FastMCP takes no version, so without this the handshake reports the mcp
+# library's own version as ours.
+mcp._mcp_server.version = __version__
 
 
 def _local_conversation() -> Conversation:

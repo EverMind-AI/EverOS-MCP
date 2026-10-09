@@ -11,7 +11,7 @@ import json
 import httpx
 import pytest
 
-from everos_mcp import server
+from everos_mcp import __version__, server
 from everos_mcp.client import EverOSClient, EverOSError
 from everos_mcp.config import ConfigError, Settings
 from everos_mcp.conversation import Conversation, ConversationRegistry
@@ -404,6 +404,12 @@ def test_tools_registered_with_annotations():
     # The Connectors Directory requires a title on every tool.
     assert all(t.title for t in tools.values())
     assert tools["add_memory"].annotations.destructiveHint is False
+
+
+def test_handshake_reports_package_version():
+    options = mcp._mcp_server.create_initialization_options()
+    assert options.server_name == "everos"
+    assert options.server_version == __version__
 
 
 def test_tool_descriptions_keep_model_guidance():
