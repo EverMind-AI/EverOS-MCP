@@ -212,7 +212,8 @@ async def add_memory(
     By default it returns at once and extraction runs in the background;
     the memory is searchable a few seconds later, and a failure is reported
     on a later tool result. Set wait=true only when you must search for it
-    right away — it blocks until extraction finishes.
+    right away — it blocks until extraction finishes; the index catches up
+    within about a second after that.
     """
     conv = _conversation(ctx)
     if not user_message and not assistant_message:
@@ -242,7 +243,9 @@ async def add_memory(
     if wait or conv.ephemeral or conv.saturated:
         status = await conv.store(messages, s.session_id)
         if status == "extracted":
-            return conv.reply("Stored and extracted; the memory is now searchable.")
+            return conv.reply(
+                "Stored and extracted; searchable once the index catches up, usually within a second."
+            )
         return conv.reply(
             f"Stored, but extraction did not run (status {status!r}). The memory is "
             "NOT searchable yet — do not tell the user it was remembered."

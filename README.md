@@ -93,7 +93,7 @@ about it.
 | Tool | Purpose |
 |---|---|
 | `search_memory` | Relevance search over stored memories (optionally with the user profile) |
-| `add_memory` | Store a durable fact or exchange; saves in the background by default (`wait=true` to block until it is searchable) |
+| `add_memory` | Store a durable fact or exchange; saves in the background by default (`wait=true` to block until extraction has finished) |
 | `get_profile` | The synthesized user profile (facts, traits, preferences) |
 | `list_memories` | Chronological, paginated browsing |
 | `forget_session` | Delete what this connection stored (memories + cases distilled from its trajectories); the profile and learned skills are kept |
@@ -107,6 +107,9 @@ permission prompt; `forget_session` is marked destructive.
 
 - Profile updates and case/skill distillation run in an offline pipeline and land seconds
   to minutes after the write.
+- Extraction finishing and the memory becoming searchable are two steps: the search index
+  catches up a moment after the write (about a second on a self-hosted server), and
+  `list_memories` shows new entries sooner than `search_memory`.
 - A background save that fails is reported on the next tool result, so the model never
   silently believes something was remembered.
 - Trajectories need more than three tool-call rounds to pass the distillation quality
