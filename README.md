@@ -11,9 +11,9 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/everos-mcp/"><img src="https://img.shields.io/pypi/v/everos-mcp?color=2DABC2&style=for-the-badge" alt="PyPI"></a>
-  <img src="https://img.shields.io/pypi/pyversions/everos-mcp?style=for-the-badge" alt="Python">
-  <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="License">
+  <a href="https://pypi.org/project/everos-mcp/"><img src="https://img.shields.io/pypi/v/everos-mcp?color=2DABC2&style=for-the-badge&cacheSeconds=3600" alt="PyPI"></a>
+  <a href="https://pypi.org/project/everos-mcp/"><img src="https://img.shields.io/pypi/pyversions/everos-mcp?style=for-the-badge&cacheSeconds=3600" alt="Python"></a>
+  <a href="https://github.com/EverMind-AI/EverOS-MCP/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="License"></a>
 </p>
 
 [Website](https://evermind.ai) · [Documentation](https://docs.evermind.ai) · [Console](https://everos.evermind.ai) · [GitHub](https://github.com/EverMind-AI/EverOS-MCP)
