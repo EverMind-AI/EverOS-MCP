@@ -242,7 +242,7 @@ def test_add_memory_always_flushes_the_open_tail(tool_client):
         }
     )
     reply = run(server.add_memory(user_message="x", wait=True))
-    assert "now searchable" in reply
+    assert "Stored and extracted" in reply
     assert paths(seen) == ["add", "flush"]
 
 
@@ -747,7 +747,7 @@ def test_ephemeral_conversation_waits_and_has_nothing_to_forget(monkeypatch):
         return saved, forgot
 
     saved, forgot = run(scenario())
-    assert "now searchable" in saved  # waited instead of backgrounding
+    assert "Stored and extracted" in saved  # waited instead of backgrounding
     assert "Nothing to forget" in forgot
     assert [r.url.path.rsplit("/", 1)[-1] for r in seen] == ["add", "flush"]
 
@@ -838,7 +838,7 @@ def test_saturated_conversation_saves_in_the_foreground(tool_client):
     for _ in range(16):
         conv._pending.add(object())  # stand-ins for running saves
     reply = run(server.add_memory(user_message="x"))
-    assert "now searchable" in reply
+    assert "Stored and extracted" in reply
 
 
 def test_notices_are_capped():
