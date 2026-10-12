@@ -108,7 +108,8 @@ class Conversation:
 
     async def store(self, messages: list[dict[str, Any]], session_id: str) -> str | None:
         """Write messages, then make sure extraction ran.
-        Returns the final status; "extracted" means searchable."""
+        Returns the final status; "extracted" means extraction finished, not that
+        the memory is searchable yet (the index catches up afterwards)."""
         async with self._lock:
             return await self._add_and_flush(messages, session_id)
 
