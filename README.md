@@ -107,9 +107,9 @@ permission prompt; `forget_session` is marked destructive.
 
 - Profile updates and case/skill distillation run in an offline pipeline and land seconds
   to minutes after the write.
-- Extraction finishing and the memory becoming searchable are two steps: the search index
-  catches up a moment after the write (about a second on a self-hosted server), and
-  `list_memories` shows new entries sooner than `search_memory`.
+- Extraction finishing and the memory becoming searchable are two steps: memories saved in
+  the last minute may not be indexed yet, and `list_memories` shows new entries sooner than
+  `search_memory`.
 - A background save that fails is reported on the next tool result, so the model never
   silently believes something was remembered.
 - Trajectories need more than three tool-call rounds to pass the distillation quality
