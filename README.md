@@ -42,8 +42,9 @@ learns from how past tasks were solved, across every session and every machine.
   your conversations, and the assistant loads it at the start of each session.
 - **Learns from experience** — record how a task was solved, tool calls included, and EverOS
   distills it into reusable cases and skills the agent recalls next time.
-- **Works on its own** — the server ships an autonomy protocol through MCP `instructions`,
-  so capable hosts load the profile, store new facts, and recall context without being asked.
+- **Works on its own** — the server ships a usage protocol through MCP `instructions`,
+  so capable hosts load the profile, store new facts, and recall context when the
+  conversation calls for it.
 - **Safe by default** — a credential guard refuses to store secrets, recalled memories are
   fenced as data rather than instructions, and you can delete everything a session stored.
 - **Cloud or self-hosted** — EverOS Cloud out of the box; one environment variable points it
