@@ -267,6 +267,17 @@ def test_notices_are_attached_once(tool_client):
     assert "boom" in first and "boom" not in second
 
 
+def test_add_memory_names_both_speakers(tool_client):
+    # Extraction falls back to sender_id when there is no name, which puts
+    # "default-user" or an opaque account id into the stored memory text.
+    seen = tool_client(routes={"add": {"data": {"status": "extracted"}}})
+    run(server.add_memory(user_message="u", assistant_message="a", wait=True))
+    user, assistant = sent(seen[0])["messages"]
+    assert (user["sender_id"], user["sender_name"]) == (SETTINGS.user_id, "User")
+    assert assistant["sender_id"] == SETTINGS.assistant_sender_id
+    assert assistant["sender_name"] == "Assistant"
+
+
 def test_add_memory_refuses_secret_without_network(tool_client):
     seen = tool_client()
     reply = run(call_and_drain(server.add_memory(user_message="key sk-abcdefghijklmnop123")))
@@ -312,6 +323,8 @@ def test_record_trajectory_lands_in_the_conversation_session(tool_client):
     assert payload["session_id"] == SETTINGS.session_id
     assert paths(seen) == ["add", "flush"]
     assert payload["messages"][1]["tool_calls"][0]["function"]["name"] == "t"
+    names = [m.get("sender_name") for m in payload["messages"]]
+    assert names == ["User", "Assistant", None, "Assistant"]
 
 
 def test_record_trajectory_validates_tool_messages(tool_client):
