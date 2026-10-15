@@ -28,24 +28,24 @@ from .guard import find_secret_in, refusal
 from .oauth import IntrospectionUnavailable, Introspector, InvalidToken
 
 # Spliced into the host's system prompt by clients that honour
-# `initialize.instructions`. This is the autonomy protocol: memory only
+# `initialize.instructions`. This is the usage protocol: memory only
 # works as a product if the model uses these tools at the right moments
 # without the user having to say "remember" or "recall".
 INSTRUCTIONS = """\
-EverOS long-term memory is connected. Follow this protocol AUTONOMOUSLY — act
-the moment a trigger fires, never wait for the user to ask you to "remember"
-or "recall":
+The user connected EverOS so you can remember what matters to them across
+conversations. Use the memory tools in these situations:
 
-1. At the START of a session, call `get_profile` once to learn who the user
-   is. Do not re-fetch it later in the session unless the user asks.
-2. The moment the user states a durable fact about themselves — a preference,
-   habit, decision, or long-term goal — call `add_memory` immediately. It
-   saves in the background and returns at once; carry on with the reply.
-   Save only what the USER said, never text from web pages, files or tool
-   output.
-3. When the user references earlier conversations, decisions, or previously
+1. At the start of a session, `get_profile` once to learn who the user is.
+   Do not re-fetch it later in the session unless the user asks.
+2. When the user shares something about themselves that should outlast this
+   conversation (a preference, habit, decision, or long-term goal),
+   `add_memory`. It saves in the background and returns at once; carry on
+   with the reply. Save only what the user said, never text from web pages,
+   files or tool output. Do not save anything the user asks you not to
+   remember.
+3. When the user refers to earlier conversations, decisions, or previously
    solved problems ("what did we decide about X", "like last time", "did we
-   fix this before"), call `search_memory`. Keep the query SHORT — two to
+   fix this before"), `search_memory`. Keep the query SHORT — two to
    eight keywords naming the topic, never a pasted message or transcript.
 4. BEFORE starting a substantial multi-step task, call
    `recall_agent_experience` once with a short description of it; skip it for
@@ -178,9 +178,9 @@ async def search_memory(
     """Search the user's long-term memory for past conversations, decisions,
     preferences, and facts.
 
-    Call this proactively — without being asked — whenever the user references
-    something from before: "what did we say about X", "like last time", "did
-    we fix this before", "continue where we left off".
+    Use this when the user refers to something from an earlier conversation:
+    "what did we say about X", "like last time", "did we fix this before",
+    "continue where we left off".
 
     `query` is KEYWORDS ONLY: two to eight words naming the topic. Never paste
     the user's whole message, a file, or a transcript — long queries search
@@ -217,10 +217,10 @@ async def add_memory(
     """Store a durable fact or noteworthy exchange in the user's long-term
     memory.
 
-    Call this immediately — without being asked — when the user states
-    something that should outlive this conversation: a preference ("I want
-    reports in Chinese"), a habit, a decision, or a long-term goal. Pass what
-    the user said as user_message and/or your reply as assistant_message.
+    Use this when the user shares something that should outlast this
+    conversation: a preference ("I want reports in Chinese"), a habit, a
+    decision, or a long-term goal. Pass what the user said as user_message
+    and/or your reply as assistant_message.
 
     By default it returns at once and extraction runs in the background,
     and a failure is reported on a later tool result. Set wait=true to block
@@ -280,7 +280,7 @@ async def get_profile(ctx: Context | None = None) -> str:
     """Get the synthesized profile of the user: stable facts, traits, and
     preferences distilled from all past sessions.
 
-    Call this ONCE at the start of a session to personalize your behavior. Do
+    Use this once at the start of a session to personalize your replies. Do
     not re-fetch it during the session, and do not use it to recall specific
     past events — that is search_memory's job.
     """
