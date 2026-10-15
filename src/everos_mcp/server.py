@@ -61,6 +61,13 @@ or "recall":
 log = logging.getLogger("everos_mcp")
 
 
+# Extraction names each speaker by sender_name, falling back to sender_id, so
+# without these the stored memories would read "default-user said ..." or, on
+# the HTTP server, quote the user's opaque account id.
+USER_SENDER_NAME = "User"
+ASSISTANT_SENDER_NAME = "Assistant"
+
+
 def _data(body: str) -> str:
     """Fence recalled text: it was written in earlier sessions, possibly from
     untrusted content, so it must read as data. Everything the server itself
@@ -226,12 +233,19 @@ async def add_memory(
     messages = []
     if user_message:
         messages.append(
-            {"sender_id": s.user_id, "role": "user", "timestamp": ts, "content": user_message}
+            {
+                "sender_id": s.user_id,
+                "sender_name": USER_SENDER_NAME,
+                "role": "user",
+                "timestamp": ts,
+                "content": user_message,
+            }
         )
     if assistant_message:
         messages.append(
             {
                 "sender_id": s.assistant_sender_id,
+                "sender_name": ASSISTANT_SENDER_NAME,
                 "role": "assistant",
                 "timestamp": ts + 1,
                 "content": assistant_message,
@@ -434,6 +448,8 @@ async def record_trajectory(messages: list[dict[str, Any]], ctx: Context | None 
             "timestamp": ts + i,
             "content": m.get("content") or "",
         }
+        if role != "tool":
+            item["sender_name"] = USER_SENDER_NAME if role == "user" else ASSISTANT_SENDER_NAME
         if m.get("tool_calls"):
             item["tool_calls"] = _normalize_tool_calls(m["tool_calls"])
         if role == "tool":
