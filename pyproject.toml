@@ -1,6 +1,6 @@
 [project]
 name = "everos-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "MCP server for EverOS — long-term memory for AI agents, backed by the EverOS Cloud Memory API (v2)"
 readme = "README.md"
 license = { text = "MIT" }
