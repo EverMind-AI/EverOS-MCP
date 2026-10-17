@@ -39,7 +39,7 @@ learns from how past tasks were solved, across every session and every machine.
 - **Remembers across sessions** — facts, decisions, and preferences you mention are stored
   and recalled by relevance whenever they matter, not dumped into every prompt.
 - **Knows who you are** — EverOS distills a user profile (facts, traits, preferences) from
-  your conversations, and the assistant loads it at the start of each session.
+  your conversations, and the assistant reads it when knowing you helps.
 - **Learns from experience** — record how a task was solved, tool calls included, and EverOS
   distills it into reusable cases and skills the agent recalls next time.
 - **Works on its own** — the server ships a usage protocol through MCP `instructions`,

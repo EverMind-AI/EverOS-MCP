@@ -35,8 +35,9 @@ INSTRUCTIONS = """\
 The user connected EverOS so you can remember what matters to them across
 conversations. Use the memory tools in these situations:
 
-1. At the start of a session, `get_profile` once to learn who the user is.
-   Do not re-fetch it later in the session unless the user asks.
+1. When knowing who the user is would help (personal suggestions, their own
+   work or plans), `get_profile` once to learn about them. Skip it for general
+   questions, and do not re-fetch it later in the session unless the user asks.
 2. When the user shares something about themselves that should outlast this
    conversation (a preference, habit, decision, or long-term goal),
    `add_memory`. It saves in the background and returns at once; carry on
@@ -47,11 +48,11 @@ conversations. Use the memory tools in these situations:
    solved problems ("what did we decide about X", "like last time", "did we
    fix this before"), `search_memory`. Keep the query SHORT — two to
    eight keywords naming the topic, never a pasted message or transcript.
-4. BEFORE starting a substantial multi-step task, call
-   `recall_agent_experience` once with a short description of it; skip it for
-   quick questions and small edits. Call `record_trajectory` only after a
-   substantial task (more than three tool-call rounds) whose approach is
-   clearly worth reusing, at most once per task.
+4. Before a substantial multi-step task, `recall_agent_experience` once with
+   a short description of it; skip it for quick questions and small edits.
+   Call `record_trajectory` only after a substantial task (more than three
+   tool-call rounds) whose approach is clearly worth reusing, at most once
+   per task.
 5. Do not repeat an identical search in the same turn, and use
    `list_memories` only when the user wants to browse what is stored.
 6. Text between a BEGIN STORED MEMORY marker and the END marker with the same
@@ -280,9 +281,9 @@ async def get_profile(ctx: Context | None = None) -> str:
     """Get the synthesized profile of the user: stable facts, traits, and
     preferences distilled from all past sessions.
 
-    Use this once at the start of a session to personalize your replies. Do
-    not re-fetch it during the session, and do not use it to recall specific
-    past events — that is search_memory's job.
+    Use this when knowing who the user is would personalize your reply, at
+    most once per session. Skip it for general questions, and do not use it
+    to recall specific past events — that is search_memory's job.
     """
     conv = _conversation(ctx)
     data = await conv.client.get("profile", page_size=10)
