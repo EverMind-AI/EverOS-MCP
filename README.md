@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://x.com/evermind"><img src="https://img.shields.io/badge/EverMind-000000?labelColor=gray&style=for-the-badge&logo=x&logoColor=white" alt="X"></a>
   <a href="https://huggingface.co/EverMind-AI"><img src="https://img.shields.io/badge/🤗_HuggingFace-EverMind-F5C842?labelColor=gray&style=for-the-badge" alt="HuggingFace"></a>
-  <a href="https://discord.gg/gYep5nQRZJ"><img src="https://img.shields.io/badge/Discord-EverMind-404EED?labelColor=gray&style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://discord.gg/QHQ2YYp7cH"><img src="https://img.shields.io/badge/Discord-EverMind-404EED?labelColor=gray&style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
