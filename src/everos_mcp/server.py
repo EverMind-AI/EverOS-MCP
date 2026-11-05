@@ -342,11 +342,11 @@ async def forget_session(ctx: Context | None = None) -> str:
         # missing; an enveloped not-found is a real answer from a real route.
         if exc.code not in ("404", "405"):
             raise
-        # Self-hosted EverOS added the delete endpoint in 1.6.0.
+        # Self-hosted EverOS releases from before the delete endpoint.
         return conv.reply(
-            "This EverOS server has no delete endpoint: self-hosted EverOS added "
-            "it in 1.6.0. Upgrade the server to 1.6.0 or later, then call "
-            "forget_session again. Nothing was deleted."
+            "This EverOS server is too old to delete memories: it has no "
+            "POST /api/v2/memory/delete. Upgrade it to a release that includes "
+            "that endpoint, then call forget_session again. Nothing was deleted."
         )
     count = result.get("count", 0)
     pending_cases = ""
