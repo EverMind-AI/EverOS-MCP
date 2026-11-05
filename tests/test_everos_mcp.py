@@ -376,10 +376,10 @@ def test_forget_session_does_not_mistake_a_real_not_found(tool_client):
         run(server.forget_session())
 
 
-def test_forget_session_explains_missing_delete_on_self_hosted(tool_client):
+def test_forget_session_on_an_old_self_hosted_server_says_to_upgrade(tool_client):
     tool_client(respond={"detail": "Not Found"}, status=404)
     reply = run(server.forget_session())
-    assert "does not support deleting" in reply and "Nothing was deleted" in reply
+    assert "1.6.0 or later" in reply and "Nothing was deleted" in reply
 
 
 def test_list_memories_formats_scores_and_page(tool_client):
