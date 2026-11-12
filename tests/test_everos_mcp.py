@@ -1158,6 +1158,10 @@ def test_leftover_from_a_failed_flush_is_flushed_on_its_own(monkeypatch):
         ("u1_ep_20260101_1", "u1_ep_20260101_1"),
         ("identity_ep_20260101_1", "identity_ep_20260101_1"),
         ("[ ]", ""),
+        ("ID:6af5", "6af5"),
+        ("[ID 6af5]", "6af5"),
+        ("[id 6af5] [2026-10-01T09:00:00] (relevance 0.90) tea", "6af5"),
+        ("id_ep_20260101_1", "id_ep_20260101_1"),
     ],
 )
 def test_memory_id_strips_the_display_label(raw, want):

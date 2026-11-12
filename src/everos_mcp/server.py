@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import secrets
 import sys
 import time
@@ -394,15 +395,20 @@ async def delete_session(ctx: Context | None = None) -> str:
     )
 
 
+# An id copied with its display label, in any case and with whatever followed
+# it on the line: "[id 6af5...] [2026-...]", "ID:6af5...". "id" must be followed
+# by ":" or a space, so an id that starts with "id" is not mistaken for a label.
+_LABELLED_ID = re.compile(r"(?i)^\[?\s*id[:\s]\s*([^\]\s]+)")
+
+
 def _memory_id(raw: str) -> str:
     """One id as the model passed it, without what a model copying the display
-    might keep: the brackets and the "id" label ("[id 6af5...]", "id:6af5...").
-    Ids themselves never contain them."""
-    s = raw.strip().removeprefix("[").removesuffix("]").strip()
-    for label in ("id:", "id "):
-        if s.startswith(label):
-            return s[len(label) :].strip()
-    return s
+    might keep: the "[id ...]" label and anything after it on the line. Ids
+    themselves contain no brackets or spaces."""
+    s = raw.strip()
+    if m := _LABELLED_ID.match(s):
+        return m.group(1)
+    return s.removeprefix("[").removesuffix("]").strip()
 
 
 @mcp.tool(title="Delete memories", annotations=_DESTRUCTIVE)
