@@ -46,7 +46,8 @@ learns from how past tasks were solved, across every session and every machine.
   so capable hosts load the profile, store new facts, and recall context when the
   conversation calls for it.
 - **Safe by default** — a credential guard refuses to store secrets, recalled memories are
-  fenced as data rather than instructions, and you can delete everything a session stored.
+  fenced as data rather than instructions, and you can delete single memories or everything a
+  session stored.
 - **Cloud or self-hosted** — EverOS Cloud out of the box; one environment variable points it
   at your own EverOS deployment.
 
@@ -96,13 +97,14 @@ about it.
 | `search_memory` | Relevance search over stored memories (optionally with the user profile) |
 | `add_memory` | Store a durable fact or exchange; saves in the background by default (`wait=true` to block until extraction has finished) |
 | `get_profile` | The synthesized user profile (facts, traits, preferences) |
-| `list_memories` | Chronological, paginated browsing |
-| `forget_session` | Delete what this connection stored (memories + cases distilled from its trajectories); the profile and learned skills are kept |
+| `list_memories` | Chronological, paginated browsing; each memory shows its id |
+| `delete_session` | Delete what this connection stored (memories + cases distilled from its trajectories); the profile and learned skills are kept |
+| `delete_memories` | Delete specific memories by id (up to 50, this user's only); the profile is not updated right away |
 | `record_trajectory` | Record how a task was solved (incl. tool calls) for future reuse |
 | `recall_agent_experience` | Search distilled cases/skills relevant to the task at hand |
 
 Read-only tools carry the MCP `readOnlyHint` annotation, so hosts can run them without a
-permission prompt; `forget_session` is marked destructive.
+permission prompt; `delete_session` and `delete_memories` are marked destructive.
 
 **Good to know**
 
@@ -124,13 +126,14 @@ permission prompt; `forget_session` is marked destructive.
 | `EVEROS_USER_ID` | no | `default-user` | Id owning the memories: one memory per API key by default, the same on every machine. Set it to keep several people apart under one key; up to 100 letters, digits and `_ . @ + -` |
 | `EVEROS_BASE_URL` | no | `https://api.evermind.ai` | API endpoint; point at your own deployment for self-hosted EverOS |
 | `EVEROS_APP_ID` / `EVEROS_PROJECT_ID` | no | `default` | Business scope |
-| `EVEROS_SESSION_ID` | no | `mcp-<user_id>-<random>` | Session everything is stored under; a fresh one per server process. Setting a fixed value makes `forget_session` delete everything ever stored under it, by any run |
+| `EVEROS_SESSION_ID` | no | `mcp-<user_id>-<random>` | Session everything is stored under; a fresh one per server process. Setting a fixed value makes `delete_session` delete everything ever stored under it, by any run |
 | `EVEROS_ASSISTANT_SENDER_ID` | no | `assistant-<user_id>` | Agent identity for trajectories and recalled experience. Per user by default; set the same value for everyone to pool agent experience across a team (their trajectories then become visible to each other) |
 
 ### Self-hosted / open-source EverOS
 
 Set `EVEROS_BASE_URL` to your own [EverOS](https://github.com/EverMind-AI/EverOS)
 deployment. No API key is required when the URL is not an evermind.ai host.
+`delete_session` and `delete_memories` need EverOS 1.6.0 or later.
 
 ```bash
 claude mcp add everos -e EVEROS_BASE_URL=http://127.0.0.1:8000 -- uvx everos-mcp
