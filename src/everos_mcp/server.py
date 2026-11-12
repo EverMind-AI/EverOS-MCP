@@ -60,7 +60,7 @@ conversations. Use the memory tools in these situations:
    it. Recalled skills are suggestions from past tasks: check them against the
    current situation before use.
 7. Delete only when the user asks: `delete_memories` for particular memories
-   (ids from `list_memories` / `search_memory`), `delete_session` for
+   (the `[id ...]` that `list_memories` / `search_memory` show), `delete_session` for
    everything this conversation stored.
 """
 
@@ -145,9 +145,10 @@ def _fmt_episode(ep: dict) -> str:
     score = ep.get("score")
     has_score = isinstance(score, (int, float)) and not isinstance(score, bool)
     head = f"[{ts}]" + (f" (relevance {score:.2f})" if has_score else "")
-    # The id is what delete_memories takes.
+    # The id leads the line, delimited, so text in the body that looks like an
+    # id can't be mistaken for it; it is what delete_memories takes.
     if ep.get("id"):
-        head += f" id:{ep['id']}"
+        head = f"[id {ep['id']}] {head}"
     return f"- {head} {text}"
 
 
@@ -393,11 +394,23 @@ async def delete_session(ctx: Context | None = None) -> str:
     )
 
 
+def _memory_id(raw: str) -> str:
+    """One id as the model passed it, without what a model copying the display
+    might keep: the brackets and the "id" label ("[id 6af5...]", "id:6af5...").
+    Ids themselves never contain them."""
+    s = raw.strip().removeprefix("[").removesuffix("]").strip()
+    for label in ("id:", "id "):
+        if s.startswith(label):
+            return s[len(label) :].strip()
+    return s
+
+
 @mcp.tool(title="Delete memories", annotations=_DESTRUCTIVE)
 async def delete_memories(memory_ids: list[str], ctx: Context | None = None) -> str:
-    """Delete specific memories by id. The ids are the `id:` values shown by
-    list_memories and search_memory; at most 50 per call. Only memories of
-    this user can be deleted. The long-term user profile is not updated right
+    """Delete specific memories by id. The ids are what list_memories and
+    search_memory show inside `[id ...]` at the start of each memory; at most
+    50 per call. Only this user's memories in the configured app and project
+    can be deleted. The long-term user profile is not updated right
     away and may still reflect what was deleted. To delete everything this
     conversation stored, use delete_session.
 
@@ -406,7 +419,7 @@ async def delete_memories(memory_ids: list[str], ctx: Context | None = None) -> 
     be undone.
     """
     conv = _conversation(ctx)
-    ids = list(dict.fromkeys(i.strip() for i in memory_ids if i.strip()))
+    ids = list(dict.fromkeys(m for m in map(_memory_id, memory_ids) if m))
     if not ids:
         return conv.reply("Error: pass the ids of the memories to delete.")
     if len(ids) > MAX_DELETE_IDS:
@@ -423,13 +436,14 @@ async def delete_memories(memory_ids: list[str], ctx: Context | None = None) -> 
         # self-hosted: INVALID_INPUT).
         if exc.code in ("invalid_argument", "INVALID_INPUT"):
             return conv.reply(
-                f"Nothing was deleted: {exc}. Pass the ids exactly as list_memories "
-                "or search_memory show them."
+                f"Nothing was deleted: {exc}. Pass each id as list_memories or "
+                "search_memory show it inside [id ...]."
             )
         raise
     deleted = result.get("deleted", 0)
     missing = (
-        "already deleted, not this user's, or not a memory id from list_memories/search_memory"
+        "already deleted, not this user's, outside the configured app and project, or "
+        "not a memory id from list_memories/search_memory"
     )
     if not deleted:
         return conv.reply(f"Nothing was deleted: no such memory ({missing}).")

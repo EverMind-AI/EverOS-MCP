@@ -393,22 +393,35 @@ def test_delete_session_while_the_server_is_still_memorizing(tool_client):
 
 def test_delete_memories_is_owner_guarded_and_reports_the_count(tool_client):
     seen = tool_client(routes={"delete_by_ids": {"data": {"deleted": 1}}})
-    reply = run(server.delete_memories([" u1_ep_20260101_1 ", "u1_ep_20260101_1", "x", ""]))
+    reply = run(
+        server.delete_memories(
+            [" u1_ep_20260101_1 ", "[id u1_ep_20260101_1]", "id:x", "id x", "x", ""]
+        )
+    )
     body = sent(seen[0])
     assert seen[0].url.path == "/api/v2/memory/delete_by_ids"
     assert body["memory_type"] == "episode" and body["user_id"] == "u1"
-    assert body["memory_ids"] == ["u1_ep_20260101_1", "x"]  # trimmed, deduplicated
-    # Self-hosted EverOS locates the files by scope.
+    # Trimmed, display label stripped, deduplicated.
+    assert body["memory_ids"] == ["u1_ep_20260101_1", "x"]
+    # Self-hosted EverOS locates the files by scope; the cloud checks it as a guard.
     assert body["app_id"] == "default" and body["project_id"] == "default"
     assert "Deleted 1 of 2" in reply and "not found" in reply and "profile" in reply
 
 
-def test_delete_memories_sends_no_scope_to_the_cloud():
+def test_delete_memories_sends_the_scope_to_the_cloud_too():
     client, seen = make_client(routes={"delete_by_ids": {"data": {"deleted": 1}}})
-    client.settings = Settings(**{**SETTINGS.__dict__, "base_url": "https://api.evermind.ai"})
-    run(client.delete_by_ids(["u1_ep_20260101_1"]))
-    # The cloud rejects unknown fields, and its ids need no scope.
-    assert "app_id" not in sent(seen[0]) and "project_id" not in sent(seen[0])
+    client.settings = Settings(
+        **{
+            **SETTINGS.__dict__,
+            "base_url": "https://api.evermind.ai",
+            "app_id": "a1",
+            "project_id": "p1",
+        }
+    )
+    run(client.delete_by_ids(["6af50674e8c20779249d4b0b"]))
+    # A guard there: an id from another app or project counts as not found.
+    body = sent(seen[0])
+    assert (body["app_id"], body["project_id"], body["user_id"]) == ("a1", "p1", "u1")
 
 
 def test_delete_memories_validates_before_calling(tool_client):
@@ -441,7 +454,9 @@ def test_episodes_show_the_id_delete_memories_takes(tool_client):
     tool_client(
         routes={"search": {"data": {"episodes": [{"id": "u1_ep_20260101_1", "summary": "tea"}]}}}
     )
-    assert "id:u1_ep_20260101_1" in run(server.search_memory("tea"))
+    reply = run(server.search_memory("tea"))
+    # The id leads the line, delimited from the body.
+    assert "- [id u1_ep_20260101_1] [] tea" in reply
 
 
 def test_list_memories_formats_scores_and_page(tool_client):
@@ -1129,3 +1144,21 @@ def test_leftover_from_a_failed_flush_is_flushed_on_its_own(monkeypatch):
     assert run(scenario()) == "extracted"
     # failed store: add, flush(500) | next store: flush leftover, add, flush
     assert calls == ["add", "flush", "flush", "add", "flush"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "want"),
+    [
+        ("6af5", "6af5"),
+        (" 6af5 ", "6af5"),
+        ("[id 6af5]", "6af5"),
+        ("id:6af5", "6af5"),
+        ("id: 6af5", "6af5"),
+        ("id 6af5", "6af5"),
+        ("u1_ep_20260101_1", "u1_ep_20260101_1"),
+        ("identity_ep_20260101_1", "identity_ep_20260101_1"),
+        ("[ ]", ""),
+    ],
+)
+def test_memory_id_strips_the_display_label(raw, want):
+    assert server._memory_id(raw) == want

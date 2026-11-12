@@ -44,18 +44,14 @@ class Settings:
     # earlier runs stored under the same id.
     session_pinned: bool = False
 
-    @property
-    def hosted(self) -> bool:
-        """EverOS Cloud rather than a self-hosted deployment."""
-        return is_hosted(self.base_url)
-
     @classmethod
     def from_env(cls) -> Settings:
         api_key = os.environ.get("EVEROS_API_KEY", "").strip()
         base_url = base_url_from_env()
         # Self-hosted / OSS deployments have no gateway auth; only require a
         # key when pointing at a hosted environment (anything on evermind.ai).
-        if not api_key and is_hosted(base_url):
+        host = urlparse(base_url).hostname or ""
+        if not api_key and (host == "evermind.ai" or host.endswith(".evermind.ai")):
             raise ConfigError(
                 "EVEROS_API_KEY is not set. Get one at "
                 "https://everos.evermind.ai/api-keys and put it in your MCP "
@@ -114,11 +110,6 @@ def base_url_from_env() -> str:
         or os.environ.get("EVER_OS_BASE_URL", "").strip()
         or PROD_BASE_URL
     ).rstrip("/")
-
-
-def is_hosted(base_url: str) -> bool:
-    host = urlparse(base_url).hostname or ""
-    return host == "evermind.ai" or host.endswith(".evermind.ai")
 
 
 def valid_id(value: str) -> bool:

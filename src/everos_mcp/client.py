@@ -206,15 +206,17 @@ class EverOSClient:
         return await self._post("/api/v2/memory/delete", payload, write=True)
 
     async def delete_by_ids(self, memory_ids: list[str]) -> dict[str, Any]:
-        """Delete episodes by id, guarded to this user: another user's id
-        counts as not found. Self-hosted EverOS needs the scope to locate the
-        files; the cloud takes no scope here (ids are unique per tenant) and
-        rejects unknown fields."""
-        payload: dict[str, Any] = {
-            "memory_type": "episode",
-            "memory_ids": memory_ids,
-            "user_id": self.settings.user_id,
-        }
-        if not self.settings.hosted:
-            payload.update(self._scope())
-        return await self._post("/api/v2/memory/delete_by_ids", payload, write=True)
+        """Delete episodes by id, guarded to this user and scope: an id another
+        user owns, or one in another app or project, counts as not found.
+        Self-hosted EverOS locates the files by the scope; the cloud checks it
+        as a guard."""
+        return await self._post(
+            "/api/v2/memory/delete_by_ids",
+            {
+                **self._scope(),
+                "memory_type": "episode",
+                "memory_ids": memory_ids,
+                "user_id": self.settings.user_id,
+            },
+            write=True,
+        )
