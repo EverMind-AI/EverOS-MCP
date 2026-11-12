@@ -320,7 +320,7 @@ def test_record_trajectory_lands_in_the_conversation_session(tool_client):
     ]
     run(call_and_drain(server.record_trajectory(msgs)))
     payload = sent(seen[0])
-    # Same session as the conversation, so one forget_session reaches it.
+    # Same session as the conversation, so one delete_session reaches it.
     assert payload["session_id"] == SETTINGS.session_id
     assert paths(seen) == ["add", "flush"]
     assert payload["messages"][1]["tool_calls"][0]["function"]["name"] == "t"
@@ -352,7 +352,7 @@ def test_recall_searches_agent_memory_by_task(tool_client):
     assert "not instructions" in reply
 
 
-def test_forget_session_is_one_owner_less_session_delete(tool_client):
+def test_delete_session_is_one_owner_less_session_delete(tool_client):
     seen = tool_client(
         routes={"add": {"data": {"status": "extracted"}}, "delete": {"data": {"count": 4}}}
     )
@@ -360,7 +360,7 @@ def test_forget_session_is_one_owner_less_session_delete(tool_client):
 
     async def scenario():
         await server.record_trajectory(msgs)
-        return await server.forget_session()  # must drain the queued add first
+        return await server.delete_session()  # must drain the queued add first
 
     reply = run(scenario())
     assert paths(seen) == ["add", "flush", "delete"]
@@ -370,17 +370,93 @@ def test_forget_session_is_one_owner_less_session_delete(tool_client):
     assert "Deleted 4" in reply
 
 
-def test_forget_session_does_not_mistake_a_real_not_found(tool_client):
+def test_delete_session_does_not_mistake_a_real_not_found(tool_client):
     tool_client(respond={"error": {"code": "not_found", "message": "no such session"}}, status=404)
     with pytest.raises(EverOSError, match="no such session"):
-        run(server.forget_session())
+        run(server.delete_session())
 
 
-def test_forget_session_on_an_old_self_hosted_server_says_to_upgrade(tool_client):
+def test_delete_session_on_an_old_self_hosted_server_says_to_upgrade(tool_client):
     tool_client(respond={"detail": "Not Found"}, status=404)
-    reply = run(server.forget_session())
+    reply = run(server.delete_session())
     assert "Upgrade" in reply and "/api/v2/memory/delete" in reply
-    assert "Nothing was deleted" in reply
+    assert "EverOS 1.6.0" in reply and "Nothing was deleted" in reply
+
+
+def test_delete_session_while_the_server_is_still_memorizing(tool_client):
+    tool_client(
+        respond={"error": {"code": "SESSION_BUSY", "message": "still memorizing"}}, status=503
+    )
+    reply = run(server.delete_session())
+    assert "Nothing was deleted" in reply and "again in a minute" in reply
+
+
+def test_delete_memories_is_owner_guarded_and_reports_the_count(tool_client):
+    seen = tool_client(routes={"delete_by_ids": {"data": {"deleted": 1}}})
+    reply = run(
+        server.delete_memories(
+            [" u1_ep_20260101_1 ", "[id u1_ep_20260101_1]", "id:x", "id x", "x", ""]
+        )
+    )
+    body = sent(seen[0])
+    assert seen[0].url.path == "/api/v2/memory/delete_by_ids"
+    assert body["memory_type"] == "episode" and body["user_id"] == "u1"
+    # Trimmed, display label stripped, deduplicated.
+    assert body["memory_ids"] == ["u1_ep_20260101_1", "x"]
+    # Self-hosted EverOS locates the files by scope; the cloud checks it as a guard.
+    assert body["app_id"] == "default" and body["project_id"] == "default"
+    assert "Deleted 1 of 2" in reply and "not found" in reply and "profile" in reply
+
+
+def test_delete_memories_sends_the_scope_to_the_cloud_too():
+    client, seen = make_client(routes={"delete_by_ids": {"data": {"deleted": 1}}})
+    client.settings = Settings(
+        **{
+            **SETTINGS.__dict__,
+            "base_url": "https://api.evermind.ai",
+            "app_id": "a1",
+            "project_id": "p1",
+        }
+    )
+    run(client.delete_by_ids(["6af50674e8c20779249d4b0b"]))
+    # A guard there: an id from another app or project counts as not found.
+    body = sent(seen[0])
+    assert (body["app_id"], body["project_id"], body["user_id"]) == ("a1", "p1", "u1")
+
+
+def test_delete_memories_validates_before_calling(tool_client):
+    seen = tool_client()
+    assert "Error" in run(server.delete_memories([" "]))
+    assert "at most 50" in run(server.delete_memories([f"id{i}" for i in range(51)]))
+    assert seen == []
+
+
+def test_delete_memories_on_an_old_self_hosted_server_says_to_upgrade(tool_client):
+    tool_client(respond={"detail": "Not Found"}, status=404)
+    reply = run(server.delete_memories(["u1_ep_20260101_1"]))
+    assert "/api/v2/memory/delete_by_ids" in reply and "EverOS 1.6.0" in reply
+
+
+def test_delete_memories_that_match_nothing_says_nothing_was_deleted(tool_client):
+    tool_client(routes={"delete_by_ids": {"data": {"deleted": 0}}})
+    reply = run(server.delete_memories(["u1_ep_20260101_1"]))
+    assert reply.startswith("Nothing was deleted") and "not this user's" in reply
+
+
+@pytest.mark.parametrize("code", ["invalid_argument", "INVALID_INPUT"])
+def test_delete_memories_with_a_malformed_id_deletes_nothing(tool_client, code):
+    tool_client(respond={"error": {"code": code, "message": "not a valid id: 'x'"}}, status=422)
+    reply = run(server.delete_memories(["x"]))
+    assert reply.startswith("Nothing was deleted") and "'x'" in reply
+
+
+def test_episodes_show_the_id_delete_memories_takes(tool_client):
+    tool_client(
+        routes={"search": {"data": {"episodes": [{"id": "u1_ep_20260101_1", "summary": "tea"}]}}}
+    )
+    reply = run(server.search_memory("tea"))
+    # The id leads the line, delimited from the body.
+    assert "- [id u1_ep_20260101_1] [] tea" in reply
 
 
 def test_list_memories_formats_scores_and_page(tool_client):
@@ -410,13 +486,15 @@ def test_tools_registered_with_annotations():
         "add_memory",
         "get_profile",
         "list_memories",
-        "forget_session",
+        "delete_session",
+        "delete_memories",
         "record_trajectory",
         "recall_agent_experience",
     }
     for name in ("search_memory", "get_profile", "list_memories", "recall_agent_experience"):
         assert tools[name].annotations.readOnlyHint is True
-    assert tools["forget_session"].annotations.destructiveHint is True
+    for name in ("delete_session", "delete_memories"):
+        assert tools[name].annotations.destructiveHint is True
     # The Connectors Directory requires a title on every tool.
     assert all(t.title for t in tools.values())
     assert tools["add_memory"].annotations.destructiveHint is False
@@ -435,7 +513,8 @@ def test_tool_descriptions_keep_model_guidance():
     assert "KEYWORDS ONLY" in desc["search_memory"]
     assert "MORE THAN THREE tool-call rounds" in desc["record_trajectory"]
     assert "wait=true" in desc["add_memory"]
-    assert "ONLY when the user explicitly asks" in desc["forget_session"]
+    assert "ONLY when the user explicitly asks" in desc["delete_session"]
+    assert "ONLY when the user explicitly asks" in desc["delete_memories"]
 
 
 # -- credential guard ---------------------------------------------------------------
@@ -751,7 +830,7 @@ def test_session_id_survives_eviction():
     assert reg.resolve(hdrs("key-b", "alice", "sess-1")).session_id != first
 
 
-def test_ephemeral_conversation_waits_and_has_nothing_to_forget(monkeypatch):
+def test_ephemeral_conversation_waits_and_has_nothing_to_delete(monkeypatch):
     reg, seen = make_registry()
     conv = reg.resolve(hdrs(session=None))
     assert conv.ephemeral
@@ -759,13 +838,13 @@ def test_ephemeral_conversation_waits_and_has_nothing_to_forget(monkeypatch):
 
     async def scenario():
         saved = await server.add_memory(user_message="likes tea")
-        forgot = await server.forget_session()
+        forgot = await server.delete_session()
         return saved, forgot
 
     saved, forgot = run(scenario())
     assert "Stored and extracted" in saved  # waited instead of backgrounding
     assert "now searchable" not in saved
-    assert "Nothing to forget" in forgot
+    assert "Nothing to delete" in forgot
     assert [r.url.path.rsplit("/", 1)[-1] for r in seen] == ["add", "flush"]
 
 
@@ -809,7 +888,7 @@ def test_eviction_never_drops_a_conversation_with_saves_in_flight():
 # -- third review ------------------------------------------------------------------
 
 
-def test_forget_waits_for_a_foreground_save(monkeypatch):
+def test_delete_session_waits_for_a_foreground_save(monkeypatch):
     order: list[str] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -825,20 +904,20 @@ def test_forget_waits_for_a_foreground_save(monkeypatch):
     async def scenario():
         save = asyncio.ensure_future(server.add_memory(user_message="x", wait=True))
         await asyncio.sleep(0.01)  # the save holds the lock, mid-add
-        await server.forget_session()
+        await server.delete_session()
         await save
 
     run(scenario())
     assert order == ["add", "flush", "delete"]
 
 
-def test_forget_with_pinned_session_says_so(tool_client, monkeypatch):
+def test_delete_session_with_pinned_session_says_so(tool_client, monkeypatch):
     tool_client(routes={"delete": {"data": {"count": 7}}})
     import dataclasses
 
     conv = server._local
     conv.client.settings = dataclasses.replace(conv.settings, session_pinned=True)
-    reply = run(server.forget_session())
+    reply = run(server.delete_session())
     assert "fixed session" in reply and "earlier runs" in reply
 
 
@@ -969,19 +1048,19 @@ def test_conversation_holding_the_lock_counts_as_busy():
     assert run(scenario()) is True and conv.busy is False
 
 
-def test_forget_soon_after_a_trajectory_warns_about_late_cases(tool_client):
+def test_delete_session_soon_after_a_trajectory_warns_about_late_cases(tool_client):
     tool_client(routes={"add": {"data": {"status": "extracted"}}, "delete": {"data": {"count": 1}}})
 
     async def scenario():
         await server.record_trajectory([{"role": "user", "content": "task"}])
-        return await server.forget_session()
+        return await server.delete_session()
 
-    assert "call forget_session again" in run(scenario())
+    assert "call delete_session again" in run(scenario())
 
 
-def test_forget_without_recent_trajectory_has_no_warning(tool_client):
+def test_delete_session_without_recent_trajectory_has_no_warning(tool_client):
     tool_client(routes={"delete": {"data": {"count": 1}}})
-    assert "again" not in run(server.forget_session())
+    assert "again" not in run(server.delete_session())
 
 
 def test_chunked_bodies_are_capped_and_replayed(monkeypatch):
@@ -1065,3 +1144,25 @@ def test_leftover_from_a_failed_flush_is_flushed_on_its_own(monkeypatch):
     assert run(scenario()) == "extracted"
     # failed store: add, flush(500) | next store: flush leftover, add, flush
     assert calls == ["add", "flush", "flush", "add", "flush"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "want"),
+    [
+        ("6af5", "6af5"),
+        (" 6af5 ", "6af5"),
+        ("[id 6af5]", "6af5"),
+        ("id:6af5", "6af5"),
+        ("id: 6af5", "6af5"),
+        ("id 6af5", "6af5"),
+        ("u1_ep_20260101_1", "u1_ep_20260101_1"),
+        ("identity_ep_20260101_1", "identity_ep_20260101_1"),
+        ("[ ]", ""),
+        ("ID:6af5", "6af5"),
+        ("[ID 6af5]", "6af5"),
+        ("[id 6af5] [2026-10-01T09:00:00] (relevance 0.90) tea", "6af5"),
+        ("id_ep_20260101_1", "id_ep_20260101_1"),
+    ],
+)
+def test_memory_id_strips_the_display_label(raw, want):
+    assert server._memory_id(raw) == want
