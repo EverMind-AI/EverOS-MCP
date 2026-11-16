@@ -35,12 +35,12 @@ MAX_NOTICES = 20
 
 class Conversation:
     """One conversation: one EverOS session holding everything it stored —
-    memories and recorded trajectories alike — so forget_session can delete
+    memories and recorded trajectories alike — so delete_session can delete
     it all with one session-scoped delete.
 
     `ephemeral` marks an HTTP caller that sends no MCP session id: nothing
     ties its calls together, so it gets no background work (a later call
-    could never report the outcome) and nothing to forget.
+    could never report the outcome) and nothing to delete.
     """
 
     def __init__(self, client: EverOSClient, *, ephemeral: bool = False) -> None:
@@ -189,7 +189,7 @@ class ConversationRegistry:
         if conv is None:
             self._evict()
             # Derived, not random: a conversation evicted while idle comes
-            # back on the same EverOS session, so forget_session still
+            # back on the same EverOS session, so delete_session still
             # reaches everything the MCP session stored.
             digest = hashlib.sha256("|".join(key).encode()).hexdigest()[:12]
             conv = self._items[key] = self._new(api_key, user_id, f"mcp-{user_id}-{digest}")

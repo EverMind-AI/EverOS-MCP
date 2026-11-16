@@ -75,7 +75,7 @@ class Settings:
             app_id=_env_scope("EVEROS_APP_ID"),
             project_id=_env_scope("EVEROS_PROJECT_ID"),
             # One session per server process (≈ one client connection): two
-            # clients never share a buffer, and forget_session has a bounded
+            # clients never share a buffer, and delete_session has a bounded
             # blast radius.
             session_id=pinned_session or f"mcp-{user_id}-{uuid.uuid4().hex[:12]}",
             session_pinned=bool(pinned_session),
